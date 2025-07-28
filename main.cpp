@@ -14,8 +14,42 @@
 #include <regex>
 #include <filesystem>
 #include <variant>
+#include <fstream>
+#include <sstream>
 
 // --- CONFIG ---
+
+struct IDmap {
+    std::unordered_map<int, std::tuple<int, int, int>> id_map;
+    std::string name;
+};
+
+IDmap load_id_file(const std::string& filename) {
+    IDmap map_;
+    std::ifstream file(filename);
+
+    if (!file.is_open()) {
+        std::cerr << "Debug::OpenFile::Error::" << filename << std::endl;
+        return map_;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+        int id, r, g, b;
+
+        if (!(iss >> id >> r >> g >> b)) {
+            std::cerr << "Debug::MalformedLine::[ " << line << std::endl;
+            continue;
+        }
+
+        map_.id_map[id] = std::make_tuple(r, g, b);
+    }
+
+    file.close();
+    return map_;
+}
+
 const ImVec4 info_color = {0.4f, 0.6f, 1.0f, 1.0f};
 const ImVec4 warning_color = {1.0f, 0.8f, 0.3f, 1.0f};
 const ImVec4 error_color = {1.0f, 0.3f, 0.3f, 1.0f};
@@ -447,52 +481,54 @@ class World{
         float TILE_LENGTH; // Length of a tile in kilometers, used for measurements and grasping scale
         float WORLD_LENGTH; // Total equatorial length of the world in kilometers
 
-        std::unordered_map<int, std::tuple<int, int, int>> TILE_ID_MAP = {
-            {255, {0, 0, 0}},       // CLEAR TILE [ NONE ]
-            {0, {0, 0, 127}},       // WATER
-            {1, {99, 173, 95}},     // COLD PLAINS
-            {2, {52, 72, 40}},      // BOREAL FOREST
-            {3, {10, 87, 6}},       // DECIDUOUS FOREST
-            {4, {16, 59, 17}},      // CONIFEROUS FOREST
-            {5, {64, 112, 32}},     // TROPICAL FOREST
-            {6, {80, 96, 48}},      // SWAMPLAND
-            {7, {7, 154, 0}},       // PLAINS
-            {8, {12, 172, 0}},      // PRAIRIE
-            {9, {124, 156, 0}},     // SAVANNA
-            {10, {80, 80, 64}},     // MARSHLAND
-            {11, {64, 80, 80}},     // MOOR
-            {12, {112, 112, 64}},   // STEPPE
-            {13, {64, 64, 16}},     // TUNDRA
-            {14, {255, 186, 0}},    // MAGMA
-            {15, {112, 80, 96}},    // CANYONS
-            {16, {132, 132, 132}},  // MOUNTAINS
-            {17, {112, 112, 96}},   // STONE DESERT
-            {18, {64, 64, 57}},     // CRAGS
-            {19, {192, 192, 192}},  // SNOWLANDS
-            {20, {224, 224, 224}},  // ICE PLAINS
-            {21, {112, 112, 32}},   // BRUSHLAND
-            {22, {253, 157, 24}},   // RED SANDS
-            {23, {238, 224, 192}},  // SALT FLATS
-            {24, {255, 224, 160}},  // COASTAL DESERT
-            {25, {255, 208, 144}},  // DESERT
-            {26, {128, 64, 0}},     // WETLAND
-            {27, {59, 29, 10}},     // MUDLAND
-            {28, {84, 65, 65}},     // HIGHLANDS/FOOTHILLS
-            {29, {170, 153, 153}},  // ABYSSAL WASTE
-            {30, {182, 170, 191}},  // PALE WASTE
-            {31, {51, 102, 153}},   // ELYSIAN FOREST
-            {32, {10, 59, 59}},     // ELYSIAN JUNGLE
-            {33, {203, 99, 81}},    // VOLCANIC WASTES
-            {34, {121, 32, 32}},    // IGNEOUS ROCKLAND
-            {35, {59, 10, 10}},     // CRIMSON FOREST
-            {36, {192, 176, 80}},   // FUNGAL FOREST
-            {37, {153, 204, 0}},    // SULFURIC FIELDS
-            {38, {240, 240, 187}},  // LIMESTONE DESERT
-            {39, {255, 163, 255}},  // DIVINE FIELDS
-            {40, {170, 48, 208}},   // DIVINE MEADOW
-            {41, {117, 53, 144}},   // DIVINE WOODLAND
-            {42, {102, 32, 137}}    // DIVINE EDEN
-        };
+        std::vector<IDmap> IDmaps;
+
+        // std::unordered_map<int, std::tuple<int, int, int>> TILE_ID_MAP = {
+        //     {255, {0, 0, 0}},       // CLEAR TILE [ NONE ]
+        //     {0, {0, 0, 127}},       // WATER
+        //     {1, {99, 173, 95}},     // COLD PLAINS
+        //     {2, {52, 72, 40}},      // BOREAL FOREST
+        //     {3, {10, 87, 6}},       // DECIDUOUS FOREST
+        //     {4, {16, 59, 17}},      // CONIFEROUS FOREST
+        //     {5, {64, 112, 32}},     // TROPICAL FOREST
+        //     {6, {80, 96, 48}},      // SWAMPLAND
+        //     {7, {7, 154, 0}},       // PLAINS
+        //     {8, {12, 172, 0}},      // PRAIRIE
+        //     {9, {124, 156, 0}},     // SAVANNA
+        //     {10, {80, 80, 64}},     // MARSHLAND
+        //     {11, {64, 80, 80}},     // MOOR
+        //     {12, {112, 112, 64}},   // STEPPE
+        //     {13, {64, 64, 16}},     // TUNDRA
+        //     {14, {255, 186, 0}},    // MAGMA
+        //     {15, {112, 80, 96}},    // CANYONS
+        //     {16, {132, 132, 132}},  // MOUNTAINS
+        //     {17, {112, 112, 96}},   // STONE DESERT
+        //     {18, {64, 64, 57}},     // CRAGS
+        //     {19, {192, 192, 192}},  // SNOWLANDS
+        //     {20, {224, 224, 224}},  // ICE PLAINS
+        //     {21, {112, 112, 32}},   // BRUSHLAND
+        //     {22, {253, 157, 24}},   // RED SANDS
+        //     {23, {238, 224, 192}},  // SALT FLATS
+        //     {24, {255, 224, 160}},  // COASTAL DESERT
+        //     {25, {255, 208, 144}},  // DESERT
+        //     {26, {128, 64, 0}},     // WETLAND
+        //     {27, {59, 29, 10}},     // MUDLAND
+        //     {28, {84, 65, 65}},     // HIGHLANDS/FOOTHILLS
+        //     {29, {170, 153, 153}},  // ABYSSAL WASTE
+        //     {30, {182, 170, 191}},  // PALE WASTE
+        //     {31, {51, 102, 153}},   // ELYSIAN FOREST
+        //     {32, {10, 59, 59}},     // ELYSIAN JUNGLE
+        //     {33, {203, 99, 81}},    // VOLCANIC WASTES
+        //     {34, {121, 32, 32}},    // IGNEOUS ROCKLAND
+        //     {35, {59, 10, 10}},     // CRIMSON FOREST
+        //     {36, {192, 176, 80}},   // FUNGAL FOREST
+        //     {37, {153, 204, 0}},    // SULFURIC FIELDS
+        //     {38, {240, 240, 187}},  // LIMESTONE DESERT
+        //     {39, {255, 163, 255}},  // DIVINE FIELDS
+        //     {40, {170, 48, 208}},   // DIVINE MEADOW
+        //     {41, {117, 53, 144}},   // DIVINE WOODLAND
+        //     {42, {102, 32, 137}}    // DIVINE EDEN
+        // };
 
         std::unordered_map<int, std::string> CivilianIdMap;
         std::unordered_map<int, std::string> MilitaryIdMap;
@@ -614,6 +650,31 @@ class World{
             }
             for (const auto &[id, name] : DecoratorIdMap) {
                 std::cout << "Decorator ID: " << id << " => Name: " << name << std::endl;
+            }
+        }
+
+        void discover_ids() {
+            std::regex pattern(R"((\d+)_([a-zA-Z0-9]+)\.(txt))");
+
+            for (const auto &entry : std::filesystem::directory_iterator("idmaps")) {
+                if (!entry.is_regular_file())
+                    continue;
+
+                std::string filename = entry.path().filename().string();
+                std::smatch matches;
+                
+                if (std::regex_match(filename, matches, pattern)) {
+                    int id = std::stoi(matches[1].str());
+                    std::string name = matches[2].str();
+
+                    IDmap map_ = load_id_file("idmaps/"+filename);
+                    map_.name = name;
+
+                    IDmaps.push_back(map_);
+                }
+            }
+            for (auto& map_ : IDmaps) {
+                std::cout << "Map: " << map_.name << std::endl;
             }
         }
 
@@ -857,6 +918,7 @@ int main(int argc, char* args[]) {
 
     World world;
     world.discover_icons();
+    world.discover_ids();
     int world_width_lower=1, world_height_lower=1, world_width_upper=1, world_height_upper=1, chunk_width=1, chunk_height=1;
 
     // ---
@@ -883,6 +945,7 @@ int main(int argc, char* args[]) {
     // constants for navigation
     std::string selected_layer;
     std::string selected_linetool;
+    std::string selected_idmap;
     ImVec4 line_color;
     Shape temporary_shape;
     SDL_FPoint last_clicked_position = {0, 0};
@@ -948,7 +1011,24 @@ int main(int argc, char* args[]) {
             int upper_textureX = static_cast<int>(mouse_worldX / chunk_width);
             int upper_textureY = static_cast<int>(mouse_worldY / chunk_height);
 
-            auto [paint_color_r, paint_color_g, paint_color_b] = world.TILE_ID_MAP[selected_tile_id];
+            int paint_color_r=255, paint_color_g=255, paint_color_b=255;
+
+            IDmap* referenced_idmap = nullptr;
+            for (auto& id_map : world.IDmaps) {
+                if (id_map.name == selected_idmap) {
+                    referenced_idmap = &id_map;
+                    break;
+                }
+            }
+
+            if (referenced_idmap) {
+                auto it = referenced_idmap->id_map.find(selected_tile_id);
+                if (it != referenced_idmap->id_map.end()) {
+                    std::tie(paint_color_r, paint_color_g, paint_color_b) = it->second;
+                } else {
+                    std::cerr << "Tile ID " << selected_tile_id << " not found in ID map: " << selected_idmap << std::endl;
+                }
+            }
 
             // Handle mouse button down events
             if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
@@ -1074,7 +1154,7 @@ int main(int argc, char* args[]) {
                                 IconLayer& referenced_layer = world.get_iconlayer(selected_layer);
                                 int r=255, g=255, b=255;
                                 if(selected_tile_id){
-                                    auto it = world.TILE_ID_MAP.find(selected_tile_id);
+                                    auto it = referenced_idmap->id_map.find(selected_tile_id);
                                     std::tie(r, g, b) = it->second;
                                 }
                                 referenced_layer.create_shape(temporary_shape, r, g, b, 255);
@@ -1366,27 +1446,50 @@ int main(int argc, char* args[]) {
             ImGui::Text("popup");
             ImGui::Separator();
 
-            if (ImGui::TreeNode("Biome ID selection")){
-                for (int i = 0; i <= 255; ++i) {
-                    auto it = world.TILE_ID_MAP.find(i);
-                    if (it == world.TILE_ID_MAP.end()) {
-                        break;
-                    } else {
-                        auto [r, g, b] = it->second;
-                        ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
-                        if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(32, 16))){
-                            printf("Debug::SetID::%d\n", i);
-                            selected_tile_id = i;
-                        }
-                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
+            // if (ImGui::TreeNode("Biome ID selection")){
+            //     for (int i = 0; i <= 255; ++i) {
+            //         auto it = world.TILE_ID_MAP.find(i);
+            //         if (it == world.TILE_ID_MAP.end()) {
+            //             break;
+            //         } else {
+            //             auto [r, g, b] = it->second;
+            //             ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+            //             if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(32, 16))){
+            //                 printf("Debug::SetID::%d\n", i);
+            //                 selected_tile_id = i;
+            //             }
+            //             ImGui::SameLine(); ImGui::Text("ID:%d", i);
 
-                        if(i%2!=0){
-                            ImGui::SameLine();
+            //             if(i%2!=0){
+            //                 ImGui::SameLine();
+            //             }
+            //         }
+            //     }
+
+            //     ImGui::TreePop();
+            // }
+
+            for(auto& id_map : world.IDmaps){
+                std::string label = "IDs: " + id_map.name;
+                if (ImGui::TreeNode(label.c_str())) {
+                    for (int i = 0; i <= 255; ++i) {
+                        auto it = id_map.id_map.find(i);
+                        if (it == id_map.id_map.end()) {
+                            break;
+                        } else {
+                            auto [r, g, b] = it->second;
+                            ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                            if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(32, 16))){
+                                printf("Debug::SetID::%d\n", i);
+                                selected_tile_id = i;
+                                selected_idmap = id_map.name;
+                            }
+                            ImGui::SameLine(); ImGui::Text("ID:%d", i);
                         }
                     }
-                }
 
-                ImGui::TreePop();
+                    ImGui::TreePop();
+                }
             }
 
             if (ImGui::TreeNode("Civilian Icon selection")){
@@ -1518,16 +1621,17 @@ int main(int argc, char* args[]) {
                 selected_linetool = "add";
             }
             if(ImGui::Button("Rmv p")){
-                selected_linetool = "add";
+                selected_linetool = "remove";
+            }
+            if(ImGui::Button("Non p")){
+                selected_linetool = "";
             }
             
             ImGui::EndPopup();
         }
 
-        ImVec4 background_color = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
         ImGui::Render();
         SDL_SetRenderScale(renderer, io.DisplayFramebufferScale.x, io.DisplayFramebufferScale.y);
-        SDL_SetRenderDrawColorFloat(renderer, background_color.x, background_color.y, background_color.z, background_color.w);
 
         // clear the renderer
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
