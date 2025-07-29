@@ -82,7 +82,7 @@ struct IconBase {
 
     virtual SDL_FPoint GetPosition() const = 0;
     virtual int GetIconId() const = 0;
-    virtual std::tuple<int, int> GetSize() const = 0;
+    virtual std::tuple<float, float> GetSize() const = 0;
 
     virtual void SetPosition(float x_, float y_) = 0;
     virtual void SetIconId(int id) = 0;
@@ -109,8 +109,8 @@ struct IconCivilian : public IconBase {
 
     SDL_FRect viewport_local;
 
-    std::tuple<int, int> GetSize() const override {
-        std::tuple<int, int> output = {width, height};
+    std::tuple<float, float> GetSize() const override {
+        std::tuple<float, float> output = {width*scale, height*scale};
         return output;
     }
 
@@ -197,8 +197,8 @@ struct IconMilitary : public IconBase {
     SDL_FRect viewport_local;
     SDL_FRect viewport_local_decorator;
 
-    std::tuple<int, int> GetSize() const override {
-        std::tuple<int, int> output = {width, height};
+    std::tuple<float, float> GetSize() const override {
+        std::tuple<float, float> output = {width*scale, height*scale};
         return output;
     }
 
@@ -441,6 +441,7 @@ struct IconLayer{
 
 struct WorldLayer{
     std::string layer_name;
+    std::string idmap_name;
     bool visible = true;
     bool is_upper;
 
@@ -478,58 +479,7 @@ class World{
         int LOWER_WORLD_WIDTH=0; // Total number of tiles along the X-axis
         int LOWER_WORLD_HEIGHT=0; // Total number of tiles along the Y-axis
 
-        float TILE_LENGTH; // Length of a tile in kilometers, used for measurements and grasping scale
-        float WORLD_LENGTH; // Total equatorial length of the world in kilometers
-
         std::vector<IDmap> IDmaps;
-
-        // std::unordered_map<int, std::tuple<int, int, int>> TILE_ID_MAP = {
-        //     {255, {0, 0, 0}},       // CLEAR TILE [ NONE ]
-        //     {0, {0, 0, 127}},       // WATER
-        //     {1, {99, 173, 95}},     // COLD PLAINS
-        //     {2, {52, 72, 40}},      // BOREAL FOREST
-        //     {3, {10, 87, 6}},       // DECIDUOUS FOREST
-        //     {4, {16, 59, 17}},      // CONIFEROUS FOREST
-        //     {5, {64, 112, 32}},     // TROPICAL FOREST
-        //     {6, {80, 96, 48}},      // SWAMPLAND
-        //     {7, {7, 154, 0}},       // PLAINS
-        //     {8, {12, 172, 0}},      // PRAIRIE
-        //     {9, {124, 156, 0}},     // SAVANNA
-        //     {10, {80, 80, 64}},     // MARSHLAND
-        //     {11, {64, 80, 80}},     // MOOR
-        //     {12, {112, 112, 64}},   // STEPPE
-        //     {13, {64, 64, 16}},     // TUNDRA
-        //     {14, {255, 186, 0}},    // MAGMA
-        //     {15, {112, 80, 96}},    // CANYONS
-        //     {16, {132, 132, 132}},  // MOUNTAINS
-        //     {17, {112, 112, 96}},   // STONE DESERT
-        //     {18, {64, 64, 57}},     // CRAGS
-        //     {19, {192, 192, 192}},  // SNOWLANDS
-        //     {20, {224, 224, 224}},  // ICE PLAINS
-        //     {21, {112, 112, 32}},   // BRUSHLAND
-        //     {22, {253, 157, 24}},   // RED SANDS
-        //     {23, {238, 224, 192}},  // SALT FLATS
-        //     {24, {255, 224, 160}},  // COASTAL DESERT
-        //     {25, {255, 208, 144}},  // DESERT
-        //     {26, {128, 64, 0}},     // WETLAND
-        //     {27, {59, 29, 10}},     // MUDLAND
-        //     {28, {84, 65, 65}},     // HIGHLANDS/FOOTHILLS
-        //     {29, {170, 153, 153}},  // ABYSSAL WASTE
-        //     {30, {182, 170, 191}},  // PALE WASTE
-        //     {31, {51, 102, 153}},   // ELYSIAN FOREST
-        //     {32, {10, 59, 59}},     // ELYSIAN JUNGLE
-        //     {33, {203, 99, 81}},    // VOLCANIC WASTES
-        //     {34, {121, 32, 32}},    // IGNEOUS ROCKLAND
-        //     {35, {59, 10, 10}},     // CRIMSON FOREST
-        //     {36, {192, 176, 80}},   // FUNGAL FOREST
-        //     {37, {153, 204, 0}},    // SULFURIC FIELDS
-        //     {38, {240, 240, 187}},  // LIMESTONE DESERT
-        //     {39, {255, 163, 255}},  // DIVINE FIELDS
-        //     {40, {170, 48, 208}},   // DIVINE MEADOW
-        //     {41, {117, 53, 144}},   // DIVINE WOODLAND
-        //     {42, {102, 32, 137}}    // DIVINE EDEN
-        // };
-
         std::unordered_map<int, std::string> CivilianIdMap;
         std::unordered_map<int, std::string> MilitaryIdMap;
         std::unordered_map<int, std::string> MarkerIdMap;
@@ -678,7 +628,7 @@ class World{
             }
         }
 
-        WorldLayer& create_worldlayer(SDL_Renderer* renderer, const std::string& name_id, bool is_upper) {
+        WorldLayer& create_worldlayer(SDL_Renderer* renderer, const std::string& name_id, bool is_upper, std::string selected_idmap) {
             int width, height;
             if (is_upper) {
                 width = UPPER_WORLD_WIDTH;
@@ -710,6 +660,7 @@ class World{
                 world_layer.layer_name = last_created_layer_name+"_a";
             }
             world_layer.layer_texture = layer_texture;
+            world_layer.idmap_name = selected_idmap;
 
             WorldLayers.push_back(world_layer);
             std::cout<<"Debug::Created::WorldLayer::"<<world_layer.layer_name<<std::endl;
@@ -1011,24 +962,7 @@ int main(int argc, char* args[]) {
             int upper_textureX = static_cast<int>(mouse_worldX / chunk_width);
             int upper_textureY = static_cast<int>(mouse_worldY / chunk_height);
 
-            int paint_color_r=255, paint_color_g=255, paint_color_b=255;
-
-            IDmap* referenced_idmap = nullptr;
-            for (auto& id_map : world.IDmaps) {
-                if (id_map.name == selected_idmap) {
-                    referenced_idmap = &id_map;
-                    break;
-                }
-            }
-
-            if (referenced_idmap) {
-                auto it = referenced_idmap->id_map.find(selected_tile_id);
-                if (it != referenced_idmap->id_map.end()) {
-                    std::tie(paint_color_r, paint_color_g, paint_color_b) = it->second;
-                } else {
-                    std::cerr << "Tile ID " << selected_tile_id << " not found in ID map: " << selected_idmap << std::endl;
-                }
-            }
+            int paint_color_r, paint_color_g, paint_color_b;
 
             // Handle mouse button down events
             if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
@@ -1044,6 +978,25 @@ int main(int argc, char* args[]) {
                             if(editing_map){
                                 WorldLayer& referenced_layer = world.get_worldlayer(selected_layer);
                                 bool is_upper_layer = referenced_layer.is_upper;
+
+                                IDmap* referenced_idmap = nullptr;
+                                for (auto& id_map : world.IDmaps) {
+                                    if (id_map.name == referenced_layer.idmap_name) {
+                                        if (selected_idmap == referenced_layer.idmap_name) {
+                                            referenced_idmap = &id_map;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (referenced_idmap) {
+                                    auto it = referenced_idmap->id_map.find(selected_tile_id);
+                                    if (it != referenced_idmap->id_map.end()) {
+                                        std::tie(paint_color_r, paint_color_g, paint_color_b) = it->second;
+                                    } else {
+                                        std::cerr << "Tile ID " << selected_tile_id << " not found in ID map: " << referenced_layer.idmap_name << std::endl;
+                                    }
+                                }
 
                                 int locking_coordinate_x, locking_coordinate_y;
                                 if(is_upper_layer){
@@ -1062,12 +1015,16 @@ int main(int argc, char* args[]) {
                                     }
                                 }
 
-                                lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
-                                SDL_Texture* referenced_texture = referenced_layer.layer_texture;
-                                SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
-                                Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                                pixels[0] = color;
-                                SDL_UnlockTexture(referenced_texture);
+                                if(referenced_idmap){
+                                    lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
+                                    SDL_Texture* referenced_texture = referenced_layer.layer_texture;
+                                    SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
+                                    Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
+                                    pixels[0] = color;
+                                    SDL_UnlockTexture(referenced_texture);
+                                } else {
+                                    std::cout<<"Debug::ReferencedIDmap::Invalid/None"<<std::endl;
+                                }
                             }
                         } else { // IS ICON_LAYER
                         std::cout<<"Debug::LeftClick::SelectedLayer::Icon"<<std::endl;
@@ -1153,10 +1110,10 @@ int main(int argc, char* args[]) {
                             if(pressed_first_line){
                                 IconLayer& referenced_layer = world.get_iconlayer(selected_layer);
                                 int r=255, g=255, b=255;
-                                if(selected_tile_id){
-                                    auto it = referenced_idmap->id_map.find(selected_tile_id);
-                                    std::tie(r, g, b) = it->second;
-                                }
+                                // if(selected_tile_id){
+                                //     auto it = referenced_idmap->id_map.find(selected_tile_id);
+                                //     std::tie(r, g, b) = it->second;
+                                // }
                                 referenced_layer.create_shape(temporary_shape, r, g, b, 255);
                                 pressed_first_line = false;
                                 temporary_shape.ClearPoints();
@@ -1182,6 +1139,25 @@ int main(int argc, char* args[]) {
                                 WorldLayer referenced_layer = world.get_worldlayer(selected_layer);
                                 bool is_upper_layer = referenced_layer.is_upper;
 
+                                IDmap* referenced_idmap = nullptr;
+                                for (auto& id_map : world.IDmaps) {
+                                    if (id_map.name == referenced_layer.idmap_name) {
+                                        if (selected_idmap == referenced_layer.idmap_name) {
+                                            referenced_idmap = &id_map;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (referenced_idmap) {
+                                    auto it = referenced_idmap->id_map.find(selected_tile_id);
+                                    if (it != referenced_idmap->id_map.end()) {
+                                        std::tie(paint_color_r, paint_color_g, paint_color_b) = it->second;
+                                    } else {
+                                        std::cerr << "Tile ID " << selected_tile_id << " not found in ID map: " << referenced_layer.idmap_name << std::endl;
+                                    }
+                                }
+
                                 int locking_coordinate_x, locking_coordinate_y;
                                 if(is_upper_layer){
                                     locking_coordinate_x = upper_textureX;
@@ -1199,18 +1175,22 @@ int main(int argc, char* args[]) {
                                     }
                                 }
 
-                                lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
-                                SDL_Texture* referenced_texture = referenced_layer.layer_texture;
-                                SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
-                                Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                                pixels[0] = color;
-                                SDL_UnlockTexture(referenced_texture);
+                                if(referenced_idmap){
+                                    lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
+                                    SDL_Texture* referenced_texture = referenced_layer.layer_texture;
+                                    SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
+                                    Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
+                                    pixels[0] = color;
+                                    SDL_UnlockTexture(referenced_texture);
+                                } else {
+                                    std::cout<<"Debug::ReferencedIDmap::Invalid/None"<<std::endl;
+                                }
                             }
                         } else { // IS ICON_LAYER
                             std::cout<<"Debug::LeftClickMotion::SelectedLayer::Icon"<<std::endl;
                             if(world.selected_world_icon && moving_icon){
                                 auto [icon_width, icon_height] = world.selected_world_icon->GetSize();
-                                world.selected_world_icon->SetPosition(textureX-(float)icon_width/2, textureY-(float)icon_height/2);
+                                world.selected_world_icon->SetPosition(mouse_worldX, mouse_worldY);
                             }
                         }
                     } else {
@@ -1341,7 +1321,7 @@ int main(int argc, char* args[]) {
                     if(layer_type){
                         world.create_iconlayer(buffer);
                     } else {
-                        world.create_worldlayer(renderer,buffer,upper);
+                        world.create_worldlayer(renderer,buffer,upper,selected_idmap);
                     }
                 }
 
