@@ -16,12 +16,60 @@
 #include <variant>
 #include <fstream>
 #include <sstream>
-
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 // --- CONFIG ---
+
+bool ENABLE_TIPS = true;
+bool ENABLE_DEBUG = true;
+
+// function to find all savefiles in the current directory
+std::vector<std::string> find_savefiles(const std::string& directory) {
+    std::vector<std::string> savefiles;
+    std::regex pattern(R"((.+)\.nw$)"); // *.nw
+
+    for (const auto &entry : std::filesystem::directory_iterator(directory)) {
+        if (!entry.is_regular_file())
+            continue;
+
+        std::string filename = entry.path().filename().string();
+        if (std::regex_match(filename, pattern)) {
+            savefiles.push_back(filename);
+        }
+    }
+
+    return savefiles;
+}
 
 struct IDmap {
     std::unordered_map<int, std::tuple<int, int, int>> id_map;
+    std::vector<uint8_t> id_LUT; 
+    Uint32 px_LUT[256]; // id_map as a lookup table
     std::string name;
+
+    void buildFastLUT() {
+        id_LUT.assign(1 << 24, 0xFF); // 0xFF = "not mapped"
+        for (auto& [id, rgb] : id_map) {
+            auto [r, g, b] = rgb;
+            uint32_t key = (r << 16) | (g << 8) | b;
+            id_LUT[key] = static_cast<uint8_t>(id);
+        }
+
+        SDL_PixelFormat format = SDL_PIXELFORMAT_RGBA8888;
+        const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(format);
+        for (int i = 0; i < 256; i++) {
+            auto it = id_map.find(i);
+            if (it != id_map.end()) {
+                Uint8 r, g, b;
+                std::tie(r, g, b) = it->second;
+                if(i==255){
+                    px_LUT[i] = SDL_MapRGBA(fmt, nullptr, 0, 0, 0, 0); // index 255 is transparent
+                } else {
+                    px_LUT[i] = SDL_MapRGBA(fmt, nullptr, r, g, b, 255);
+                }
+            }
+        }
+    }
 };
 
 IDmap load_id_file(const std::string& filename) {
@@ -54,8 +102,8 @@ const ImVec4 info_color = {0.4f, 0.6f, 1.0f, 1.0f};
 const ImVec4 warning_color = {1.0f, 0.8f, 0.3f, 1.0f};
 const ImVec4 error_color = {1.0f, 0.3f, 0.3f, 1.0f};
 
-const int SCREEN_WIDTH = 1280; // Width of the window
-const int SCREEN_HEIGHT = 720; // Height of the window
+const int SCREEN_WIDTH = 1280; // Width of the window (default)
+const int SCREEN_HEIGHT = 720; // Height of the window (default)
 
 int current_window_width = SCREEN_WIDTH; // Current width of the window, used for rendering
 int current_window_height = SCREEN_HEIGHT; // Current height of the window, used for rendering
@@ -467,7 +515,7 @@ class World{
     private:
         std::vector<IconLayer> IconLayers;
         std::vector<WorldLayer> WorldLayers;
-        std::string last_created_layer_name = "undefined";
+        std::string last_created_layer_name = "name";
 
     public:
         bool WORLD_HAS_INITIALIZED = false;
@@ -529,6 +577,162 @@ class World{
                 if (index >= WorldLayers.size() - 1) return;
                 std::swap(WorldLayers[index], WorldLayers[index + 1]);
             }
+        }
+
+        void SaveWorld(std::string filename = "savename.nw") {
+            std::cout << "Debug::SaveWorld::" << filename << std::endl;
+            std::string full_filename = "saves/" + filename;
+
+            std::ofstream out(full_filename, std::ios::binary);
+            if (!out) {
+                std::cerr << "Failed to open save file\n";
+                return;
+            }
+
+            // Write world dimensions
+            int32_t world_width  = UPPER_WORLD_WIDTH;
+            int32_t world_height = UPPER_WORLD_HEIGHT;
+            int32_t chunk_width  = CHUNK_WIDTH;
+            int32_t chunk_height = CHUNK_HEIGHT;
+            out.write(reinterpret_cast<char*>(&world_width), sizeof(world_width));
+            out.write(reinterpret_cast<char*>(&world_height), sizeof(world_height));
+            out.write(reinterpret_cast<char*>(&chunk_width), sizeof(chunk_width));
+            out.write(reinterpret_cast<char*>(&chunk_height), sizeof(chunk_height));
+
+            // Number of layers
+            int32_t num_layers_world = WorldLayers.size();
+            out.write(reinterpret_cast<char*>(&num_layers_world), sizeof(num_layers_world));
+
+            int32_t num_layers_icon = IconLayers.size();
+            out.write(reinterpret_cast<char*>(&num_layers_icon), sizeof(num_layers_icon));
+
+            // World layers
+            for (auto& world_layer : WorldLayers) {
+                // Find referenced IDmap
+                IDmap* referenced_id_map = nullptr;
+                for (auto& id_map : IDmaps) {
+                    if (id_map.name == world_layer.idmap_name) {
+                        referenced_id_map = &id_map;
+                        break;
+                    }
+                }
+                if (!referenced_id_map) {
+                    std::cerr << "No IDmap found for layer " << world_layer.layer_name << "\n";
+                    continue;
+                }
+
+                // Query texture
+                SDL_PixelFormat format = world_layer.layer_texture->format;
+                int width = world_layer.layer_texture->w; 
+                int height = world_layer.layer_texture->h;
+                const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(format);
+
+                // Lock texture
+                void* pixels;
+                int pitch;
+                if (SDL_LockTexture(world_layer.layer_texture, nullptr, &pixels, &pitch) < 0) {
+                    std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
+                    continue;
+                }
+
+                // Metadata / header stuff
+                int32_t lnameLen = world_layer.layer_name.size();
+                out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
+                out.write(world_layer.layer_name.data(), lnameLen);
+
+                int32_t idnameLen = world_layer.idmap_name.size();
+                out.write(reinterpret_cast<char*>(&idnameLen), sizeof(idnameLen));
+                out.write(world_layer.idmap_name.data(), idnameLen);
+
+                int32_t w = width, h = height;
+                out.write(reinterpret_cast<char*>(&w), sizeof(w));
+                out.write(reinterpret_cast<char*>(&h), sizeof(h));
+
+                uint8_t isUpper = world_layer.is_upper ? 1 : 0;
+                out.write(reinterpret_cast<char*>(&isUpper), sizeof(isUpper));
+
+                // Streaming pixel to file
+                std::vector<uint8_t> rowBuffer(width);
+
+                uint8_t* row = static_cast<uint8_t*>(pixels);
+                for (int y = 0; y < height; ++y) {
+                    Uint32* px = reinterpret_cast<Uint32*>(row);
+                    for (int x = 0; x < width; ++x) {
+                        Uint32 pixel = px[x];
+
+                        Uint8 r = (pixel >> 24) & 0xFF;
+                        Uint8 g = (pixel >> 16) & 0xFF;
+                        Uint8 b = (pixel >> 8)  & 0xFF;
+
+                        uint32_t key = (r << 16) | (g << 8) | b;
+                        uint8_t index = referenced_id_map->id_LUT[key];
+                        if (index == 0xFF) index = 255;
+
+                        rowBuffer[x] = index;
+                    }
+                    out.write(reinterpret_cast<char*>(rowBuffer.data()), width); // flush row
+                    row += pitch;
+                }
+
+                SDL_UnlockTexture(world_layer.layer_texture);
+                std::cout << "Debug::LayerSaved::" << world_layer.layer_name << std::endl;
+            }
+
+            // Icon layers
+            for (auto& icon_layer : IconLayers) {
+                // Layer name
+                int32_t lnameLen = icon_layer.layer_name.size();
+                out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
+                out.write(icon_layer.layer_name.data(), lnameLen);
+
+                // Civilian icons
+                int32_t num_civilian_icons = icon_layer.IconsCivilian.size();
+                out.write(reinterpret_cast<char*>(&num_civilian_icons), sizeof(num_civilian_icons));
+
+                for (auto& icon : icon_layer.IconsCivilian) {
+                    out.write(reinterpret_cast<char*>(&icon.icon_id), sizeof(icon.icon_id));
+                    out.write(reinterpret_cast<char*>(&icon.position.x), sizeof(icon.position.x));
+                    out.write(reinterpret_cast<char*>(&icon.position.y), sizeof(icon.position.y));
+                }
+
+                // Military icons
+                int32_t num_military_icons = icon_layer.IconsMilitary.size();
+                out.write(reinterpret_cast<char*>(&num_military_icons), sizeof(num_military_icons));
+
+                for (auto& icon : icon_layer.IconsMilitary) {
+                    out.write(reinterpret_cast<char*>(&icon.icon_id), sizeof(icon.icon_id));
+                    out.write(reinterpret_cast<char*>(&icon.position.x), sizeof(icon.position.x));
+                    out.write(reinterpret_cast<char*>(&icon.position.y), sizeof(icon.position.y));
+
+                    int32_t num_decorators = icon.decorators.size();
+                    out.write(reinterpret_cast<char*>(&num_decorators), sizeof(num_decorators));
+                    for (auto& decorator : icon.decorators) {
+                        out.write(reinterpret_cast<char*>(&decorator.id), sizeof(decorator.id));
+                    }
+                }
+
+                // Shapes
+                int32_t num_shapes = icon_layer.Shapes.size();
+                out.write(reinterpret_cast<char*>(&num_shapes), sizeof(num_shapes));
+
+                for (auto& shape : icon_layer.Shapes) {
+                    out.write(reinterpret_cast<char*>(&shape.r), sizeof(shape.r));
+                    out.write(reinterpret_cast<char*>(&shape.g), sizeof(shape.g));
+                    out.write(reinterpret_cast<char*>(&shape.b), sizeof(shape.b));
+                    out.write(reinterpret_cast<char*>(&shape.a), sizeof(shape.a));
+
+                    int32_t num_points = shape.GetSize();
+                    out.write(reinterpret_cast<char*>(&num_points), sizeof(num_points));
+
+                    for (int i = 0; i < num_points; ++i) {
+                        out.write(reinterpret_cast<char*>(&shape.point_array[i].x), sizeof(shape.point_array[i].x));
+                        out.write(reinterpret_cast<char*>(&shape.point_array[i].y), sizeof(shape.point_array[i].y));
+                    }
+                }
+            }
+
+            std::cout << "Debug::World saved successfully to " << filename << std::endl;
+            out.close();
         }
 
         void discover_icons() {
@@ -619,6 +823,7 @@ class World{
 
                     IDmap map_ = load_id_file("idmaps/"+filename);
                     map_.name = name;
+                    map_.buildFastLUT();
 
                     IDmaps.push_back(map_);
                 }
@@ -1276,7 +1481,7 @@ int main(int argc, char* args[]) {
 
                 ImGui::Text("Will result in lower world size of %d %d", atoi(world_width_buffer)*atoi(chunk_width_buffer), atoi(world_height_buffer)*atoi(chunk_height_buffer));
                 if(atoi(world_width_buffer)*atoi(chunk_width_buffer)>=16384 || atoi(world_height_buffer)*atoi(chunk_height_buffer)>=16384){
-                    ImGui::TextColored(warning_color, "Warning! Max texture(layer) size is 16384, \nexpect crashes or buggy behaviour.");
+                    ImGui::TextColored(warning_color, "Warning! Max texture(layer) size is 16384, \nexpect a crash or buggy behaviour.");
                     ImGui::TextColored(info_color, "Note: Expected to implement bigger worlds later.");
                 }
 
@@ -1297,6 +1502,194 @@ int main(int argc, char* args[]) {
                 }
 
                 ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World selection");
+
+                if (ImGui::BeginListBox("##worldlist", ImVec2(-FLT_MIN, 10 * ImGui::GetTextLineHeightWithSpacing()))) {
+                    std::vector<std::string> discovered_worlds = find_savefiles("saves/");
+                    if(discovered_worlds.empty()){
+                        ImGui::TextColored(error_color, "No savefiles found in current directory.");
+                    } else {
+                        for (const auto& filename : discovered_worlds) {
+                            if(ImGui::Button(filename.c_str())){
+                                std::string full_filename = "saves/" + filename;
+                                std::ifstream in(full_filename, std::ios::binary);
+                                if (!in) {
+                                    std::cerr << "Failed to open file " << full_filename << "\n";
+                                    continue;
+                                }
+
+                                int32_t world_width_loaded, world_height_loaded, chunk_width_loaded, chunk_height_loaded;
+                                in.read(reinterpret_cast<char*>(&world_width_loaded), sizeof(world_width_loaded));
+                                in.read(reinterpret_cast<char*>(&world_height_loaded), sizeof(world_height_loaded));
+                                in.read(reinterpret_cast<char*>(&chunk_width_loaded), sizeof(chunk_width_loaded));
+                                in.read(reinterpret_cast<char*>(&chunk_height_loaded), sizeof(chunk_height_loaded));
+                                //* loading world data into respective functions
+                                world.set_world_size(world_width_loaded, world_height_loaded);
+                                world.set_chunk_size(chunk_width_loaded, chunk_height_loaded);
+                                auto [world_width_lower_intermitent, world_height_lower_intermitent] = world.get_world_size(false);
+                                auto [world_width_upper_intermitent, world_height_upper_intermitent] = world.get_world_size(true);
+                                auto [chunk_width_intermitent, chunk_height_intermitent] = world.get_chunk_size();
+                                world_width_lower = world_width_lower_intermitent;
+                                world_height_lower = world_height_lower_intermitent;
+                                world_width_upper = world_width_upper_intermitent;
+                                world_height_upper = world_height_upper_intermitent;
+                                chunk_width = chunk_width_intermitent;
+                                chunk_height = chunk_height_intermitent;
+                                texture_rect.w = world_width_lower;
+                                texture_rect.h = world_height_lower;
+
+                                int32_t num_layers_world, num_layers_icon;
+                                in.read(reinterpret_cast<char*>(&num_layers_world), sizeof(num_layers_world));
+                                in.read(reinterpret_cast<char*>(&num_layers_icon), sizeof(num_layers_icon));
+
+                                std::cout << "Debug::Loading " << num_layers_world << " world layers\n";
+                                
+                                for (int i = 0; i < num_layers_world; i++) {
+                                    // Layer name
+                                    int32_t lnameLen;
+                                    in.read(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
+                                    std::string layer_name(lnameLen, '\0');
+                                    in.read(layer_name.data(), lnameLen);
+
+                                    // IDmap name
+                                    int32_t idnameLen;
+                                    in.read(reinterpret_cast<char*>(&idnameLen), sizeof(idnameLen));
+                                    std::string idmap_name(idnameLen, '\0');
+                                    in.read(idmap_name.data(), idnameLen);
+
+                                    // Dimensions
+                                    int32_t width, height;
+                                    in.read(reinterpret_cast<char*>(&width), sizeof(width));
+                                    in.read(reinterpret_cast<char*>(&height), sizeof(height));
+
+                                    // Upper flag
+                                    uint8_t isUpper;
+                                    in.read(reinterpret_cast<char*>(&isUpper), sizeof(isUpper));
+
+                                    std::cout << "Debug::LoadingLayer::" << layer_name 
+                                            << " (" << width << "x" << height << ") "
+                                            << "IDmap=" << idmap_name 
+                                            << " Upper=" << (int)isUpper << "\n";
+
+                                    WorldLayer loaded_layer = world.create_worldlayer(renderer, layer_name, isUpper, idmap_name);
+                                    IDmap* referenced_id_map = nullptr;
+                                    for (auto& id_map : world.IDmaps) {
+                                        if (id_map.name == idmap_name) {
+                                            referenced_id_map = &id_map;
+                                            break;
+                                        }
+                                    }
+                                    if (!referenced_id_map) {
+                                        std::cerr << "IDmap not found: " << idmap_name << "\n";
+                                        continue;
+                                    }
+
+                                    void* texPixels;
+                                    int pitch;
+                                    if (SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch) < 0) {
+                                        std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
+                                        continue;
+                                    }
+
+                                    Uint32* rowOut = reinterpret_cast<Uint32*>(texPixels);
+                                    std::vector<uint8_t> rowBuf(width);
+
+                                    for (int y = 0; y < height; y++) {
+                                        in.read(reinterpret_cast<char*>(rowBuf.data()), width);
+
+                                        for (int x = 0; x < width; x++) {
+                                            uint8_t idx = rowBuf[x];
+                                            rowOut[x] = referenced_id_map->px_LUT[idx];
+                                        }
+
+                                        rowOut = reinterpret_cast<Uint32*>(reinterpret_cast<uint8_t*>(rowOut) + pitch);
+                                    }
+
+                                    SDL_UnlockTexture(loaded_layer.layer_texture);
+                                }
+
+                                std::cout << "Debug::Loading " << num_layers_icon << " icon layers\n";
+                                
+                                for (int i = 0; i < num_layers_icon; i++) {
+                                    int32_t lnamelen;
+                                    in.read(reinterpret_cast<char*>(&lnamelen), sizeof(lnamelen));
+                                    std::string layer_name(lnamelen, '\0');
+                                    in.read(layer_name.data(), lnamelen);
+
+                                    int32_t num_civilian_icons, num_military_icons, num_shapes;
+                                    IconLayer& icon_layer = world.create_iconlayer(layer_name);
+
+                                    in.read(reinterpret_cast<char*>(&num_civilian_icons), sizeof(num_civilian_icons));
+                                    for (int j = 0; j < num_civilian_icons; j++) {
+                                        int32_t icon_id;
+                                        float pos_x, pos_y;
+                                        in.read(reinterpret_cast<char*>(&icon_id), sizeof(icon_id));
+                                        in.read(reinterpret_cast<char*>(&pos_x), sizeof(pos_x));
+                                        in.read(reinterpret_cast<char*>(&pos_y), sizeof(pos_y));
+                                        
+                                        icon_layer.create_civilian_icon(renderer, icon_id, pos_x, pos_y, world.CivilianIdMap);
+                                    }
+
+                                    in.read(reinterpret_cast<char*>(&num_military_icons), sizeof(num_military_icons));
+                                    for (int j = 0; j < num_military_icons; j++) {
+                                        int32_t icon_id;
+                                        float pos_x, pos_y;
+                                        in.read(reinterpret_cast<char*>(&icon_id), sizeof(icon_id));
+                                        in.read(reinterpret_cast<char*>(&pos_x), sizeof(pos_x));
+                                        in.read(reinterpret_cast<char*>(&pos_y), sizeof(pos_y));
+
+                                        icon_layer.create_military_icon(renderer, icon_id, pos_x, pos_y, world.MilitaryIdMap);
+
+                                        int32_t num_decorators;
+                                        in.read(reinterpret_cast<char*>(&num_decorators), sizeof(num_decorators));
+                                        for (int k = 0; k < num_decorators; k++) {
+                                            int32_t decorator_id;
+                                            in.read(reinterpret_cast<char*>(&decorator_id), sizeof(decorator_id));
+                                            auto& created_icon = icon_layer.IconsMilitary.back();
+                                            created_icon.add_decorator(renderer, decorator_id, world.DecoratorIdMap);
+                                        }
+                                    }
+
+                                    in.read(reinterpret_cast<char*>(&num_shapes), sizeof(num_shapes));
+                                    for(int j = 0; j<num_shapes; j++){
+                                        int8_t r, g, b, a;
+                                        in.read(reinterpret_cast<char*>(&r), sizeof(r));
+                                        in.read(reinterpret_cast<char*>(&g), sizeof(g));
+                                        in.read(reinterpret_cast<char*>(&b), sizeof(b));
+                                        in.read(reinterpret_cast<char*>(&a), sizeof(a));
+
+                                        int32_t num_points;
+                                        in.read(reinterpret_cast<char*>(&num_points), sizeof(num_points));
+
+                                        Shape loaded_shape;
+                                        for(int k = 0; k<num_points; k++){
+                                            float point_x, point_y;
+                                            in.read(reinterpret_cast<char*>(&point_x), sizeof(point_x));
+                                            in.read(reinterpret_cast<char*>(&point_y), sizeof(point_y));
+                                            SDL_FPoint point = {point_x, point_y};
+                                            loaded_shape.AddPoint(point);
+                                        }
+                                        icon_layer.create_shape(loaded_shape, r, g, b, a);
+                                    }
+                                }
+
+                                in.close();
+                            }
+                        }
+                    }
+
+                    ImGui::EndListBox();
+                }
+
+                ImGui::Separator();
+            }
+
+            if(ENABLE_TIPS==true){
+                ImGui::TextColored(warning_color, "Disable tips?");
+                ImGui::SameLine();
+                if(ImGui::Button("yes")){
+                    ENABLE_TIPS = false;
+                }
             }
 
             if(world.HasInitializedCheck()){
@@ -1305,28 +1698,42 @@ int main(int argc, char* args[]) {
 
                 ImGui::InputText("layer name##01",buffer,sizeof(buffer));
 
-                if(ImGui::Button("is upper?##02")){
+                if(ENABLE_TIPS==true){
+                    ImGui::TextColored(info_color, "Note: Layers can be Upper or Lower,\nUpper layers are lower resolution and bigger\nLower layers are higher resolution and smaller,\nso we use lower layers for higher detail\nand we use upper layers for the bigger picture.");
+                }
+                if(ImGui::Button("toggle##02")){
                     upper = !upper;
                 }
                 ImGui::SameLine();
-                ImGui::Text(upper ? "Yes" : "No");
+                ImGui::Text(upper ? "Upper" : "Lower");
 
-                if(ImGui::Button("layer type##02")){
+                if(ENABLE_TIPS==true){
+                    ImGui::TextColored(info_color, "Note: You can choose to create either\nan icon layer or a world layer.");
+                }
+                if(ImGui::Button("toggle##03")){
                     layer_type = !layer_type;
                 }
                 ImGui::SameLine();
                 ImGui::Text(layer_type ? "Icon" : "World");
 
-                if(ImGui::Button("create layer##03")){
+                if(ImGui::Button("CREATE layer##04")){
                     if(layer_type){
                         world.create_iconlayer(buffer);
                     } else {
-                        world.create_worldlayer(renderer,buffer,upper,selected_idmap);
+                        if(selected_idmap.empty()){
+                            std::cout<<"Debug::NoIDmapSelected::CannotCreateWorldLayer"<<std::endl;
+                        } else {
+                            world.create_worldlayer(renderer,buffer,upper,selected_idmap);
+                        }
                     }
                 }
 
                 if (ImGui::TreeNode("Layers")) {
                     if (ImGui::TreeNode("Icon Layers")) {
+                        if(ENABLE_TIPS==true){
+                            ImGui::TextColored(info_color, "Note: Icon layers are rendered from bottom to top,\nthe last layer in the list (the top) is rendered on top.");
+                            ImGui::TextColored(info_color, "Each layer can have military and civilian icons,\nit can also contain lines.");
+                        }
                         const auto& iconLayers = world.GetIconLayers();
                         int total = static_cast<int>(iconLayers.size());
 
@@ -1362,6 +1769,9 @@ int main(int argc, char* args[]) {
                     }
 
                     if (ImGui::TreeNode("World Layers")) {
+                        if(ENABLE_TIPS==true){
+                            ImGui::TextColored(info_color, "Note: World layers are rendered from bottom to top,\nthe last layer in the list (the top) is rendered on top.");
+                        }
                         const auto& layers = world.GetWorldLayers();
                         int total = static_cast<int>(layers.size());
 
@@ -1398,7 +1808,31 @@ int main(int argc, char* args[]) {
 
                     ImGui::TreePop();
                 }
+
+                if(selected_idmap.empty()){
+                    ImGui::TextColored(warning_color, "Warning! No Tile ID/ID map selected, \nyou won't be able to create a new world layer.");
+                    if(ENABLE_TIPS==true){
+                        ImGui::TextColored(info_color, "Select a Tile ID from the dropdown menu,\nlayers get created with the selected ID map,\nso you have to have an ID map selected beforehand.");
+                    }
+                } else {
+                    ImGui::TextColored(info_color, "ID map selected: %s", selected_idmap.c_str());
+                    if(ENABLE_TIPS==true){
+                        ImGui::TextColored(info_color, "This will create a world layer with this ID map attached.\nIf you want to load this save later,\nmake sure you have this ID map in your IDmaps folder.");
+                    }
+                }
+            }
+
+            if(world.HasInitializedCheck()){
                 ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World saving");
+
+                static char buffer[32] = "";
+                ImGui::InputText("save name", buffer, sizeof(buffer));
+                
+                if(ImGui::Button("Save world")){
+                    std::string filename = std::string(buffer) + ".nw";
+                    world.SaveWorld(filename);
+                }
             }
 
             if(world.selected_world_icon){
@@ -1417,7 +1851,7 @@ int main(int argc, char* args[]) {
             ImGui::End();
         }
  
-        if (popup)
+        if (popup==true)
         {
             ImGui::OpenPopup("dropdownmenu");
         }
@@ -1425,29 +1859,6 @@ int main(int argc, char* args[]) {
         {
             ImGui::Text("popup");
             ImGui::Separator();
-
-            // if (ImGui::TreeNode("Biome ID selection")){
-            //     for (int i = 0; i <= 255; ++i) {
-            //         auto it = world.TILE_ID_MAP.find(i);
-            //         if (it == world.TILE_ID_MAP.end()) {
-            //             break;
-            //         } else {
-            //             auto [r, g, b] = it->second;
-            //             ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
-            //             if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(32, 16))){
-            //                 printf("Debug::SetID::%d\n", i);
-            //                 selected_tile_id = i;
-            //             }
-            //             ImGui::SameLine(); ImGui::Text("ID:%d", i);
-
-            //             if(i%2!=0){
-            //                 ImGui::SameLine();
-            //             }
-            //         }
-            //     }
-
-            //     ImGui::TreePop();
-            // }
 
             for(auto& id_map : world.IDmaps){
                 std::string label = "IDs: " + id_map.name;
