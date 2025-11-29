@@ -19,6 +19,7 @@
 #include <cstring>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include <queue>
 
 // --- CONFIG ---
 
@@ -106,13 +107,78 @@ int current_window_height = SCREEN_HEIGHT; // Current height of the window, used
 static bool dragging = false; // Flag to indicate if the user is dragging the mouse
 static float lastMouseX = 0.0f, lastMouseY = 0.0f; // Last mouse coordinates before dragging starts 
 
-inline void SetPixelGlobal(Uint32* pixels, int pitch, int x, int y, Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
-    Uint32 color = (Uint32(r) << 24) | (Uint32(g) << 16) | (Uint32(b) << 8) | Uint32(a);
-    pixels[y * (pitch / sizeof(Uint32)) + x] = color;
+inline void ClampRectToTexture(SDL_Rect& r, int textureWidth, int textureHeight) {
+    if (r.x < 0) {
+        r.w += r.x;
+        r.x = 0;
+    }
+    if (r.y < 0) {
+        r.h += r.y;
+        r.y = 0;
+    }
+
+    if (r.x + r.w > textureWidth)
+        r.w = textureWidth - r.x;
+
+    if (r.y + r.h > textureHeight)
+        r.h = textureHeight - r.y;
+
+    if (r.w < 0) r.w = 0;
+    if (r.h < 0) r.h = 0;
 }
 
-inline void SetPixelLocal(Uint32* pixels, int pitch, Uint8 r, Uint8 g, Uint8 b) {
-    Uint32 color = (Uint32(r) << 24) | (Uint32(g) << 16) | (Uint32(b) << 8) | Uint32(255);
+inline Uint32 GetPixel(Uint32* pixels, int pitch, int x, int y) {
+    return pixels[y * (pitch / 4) + x];
+}
+
+inline void SetPixelGlobal(Uint32* pixels, int pitch, int x, int y, Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
+    Uint32 color = (Uint32(r) << 24) | (Uint32(g) << 16) | (Uint32(b) << 8) | Uint32(a);
+    pixels[y * (pitch / 4) + x] = color;
+}
+
+void PaintBrush(Uint32* pixels, int pitch, int radius, Uint32 color)
+{
+    int rowPixels = pitch / 4; 
+
+    for (int dy = -radius; dy <= radius; ++dy)
+    {
+        for (int dx = -radius; dx <= radius; ++dx)
+        {
+            if (dx*dx + dy*dy <= radius * radius)
+            {
+                int px = dx + radius;
+                int py = dy + radius;
+
+                pixels[py * rowPixels + px] = color;
+            }
+        }
+    }
+}
+
+void PaintFill(Uint32* pixels, int pitch, int radius, Uint32 target_color, Uint32 color)
+{
+    int rowPixels = pitch / 4;
+
+    for (int dy = -radius; dy <= radius; ++dy)
+    {
+        for (int dx = -radius; dx <= radius; ++dx)
+        {
+            if (dx*dx + dy*dy <= radius * radius)
+            {
+                int px = dx + radius;
+                int py = dy + radius;
+                int idx = py * rowPixels + px;
+
+                if (pixels[idx] == target_color) {
+                    pixels[idx] = color;
+                }
+            }
+        }
+    }
+}
+
+inline void SetPixelLocal(Uint32* pixels, int pitch, Uint8 r, Uint8 g, Uint8 b, Uint8 a = 255) {
+    Uint32 color = (Uint32(r) << 24) | (Uint32(g) << 16) | (Uint32(b) << 8) | Uint32(a);
     pixels[0] = color;
 }
 
@@ -129,6 +195,8 @@ struct IconBase {
 
     virtual void SetPosition(float x_, float y_) = 0;
     virtual void SetIconId(int id) = 0;
+
+    virtual void SetSelectionStatus(bool input_boolean) = 0;
 
     virtual void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map) = 0;
     virtual void add_decorator(SDL_Renderer* renderer, int id, std::unordered_map<int, std::string>& id_map) = 0;
@@ -149,6 +217,7 @@ struct IconCivilian : public IconBase {
     float width, height;
     float scale=1.0f;
     int icon_id;
+    bool selected = false;
 
     SDL_FRect viewport_local;
 
@@ -165,6 +234,8 @@ struct IconCivilian : public IconBase {
         position.x = x_;
         position.y = y_;
     } 
+
+    void SetSelectionStatus(bool input_boolean) { selected = input_boolean; }
 
     void SetIconId(int id) { icon_id = id; }
 
@@ -224,6 +295,16 @@ struct IconCivilian : public IconBase {
         viewport_local.w = width_scaled;
         viewport_local.h = height_scaled;
         SDL_RenderTexture(renderer, icon_texture, NULL, &viewport_local);
+
+        if (selected) {
+            SDL_FRect selection_rectangle = {
+                viewport_local.x-viewport_local.w,
+                viewport_local.y-viewport_local.h,
+                viewport_local.w*3.0f,
+                viewport_local.h*3.0f
+            };
+            SDL_RenderRect(renderer, &selection_rectangle);
+        }
     }
 };
 
@@ -234,6 +315,7 @@ struct IconMilitary : public IconBase {
     SDL_FPoint center;
     float width, height, scale=1.0f, angle=0.0;
     int icon_id=0, country_id=0, quality=0;
+    bool selected = false;
     std::vector<IconDecorator> decorators;
 
     SDL_FRect viewport_local;
@@ -256,6 +338,8 @@ struct IconMilitary : public IconBase {
     } 
 
     void SetIconId(int id) { icon_id = id; }
+
+    void SetSelectionStatus(bool input_boolean) { selected = input_boolean; }
 
     void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map){
         if(icon_id){
@@ -354,6 +438,15 @@ struct IconMilitary : public IconBase {
             index++;
         }
 
+        if (selected) {
+            SDL_FRect selection_rectangle = {
+                viewport_local.x-viewport_local.w,
+                viewport_local.y-viewport_local.h,
+                viewport_local.w*3.0f,
+                viewport_local.h*3.0f
+            };
+            SDL_RenderRect(renderer, &selection_rectangle);
+        }
     }
 };
 
@@ -1339,6 +1432,9 @@ class World{
 
                     for (auto& icon : icon_layer.IconsCivilian) {
                         icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
+                        // if (icon.GetPosition().x == selected_world_icon->GetPosition().x && icon.GetPosition().y == selected_world_icon->GetPosition().y) {
+
+                        // }
                     }
                     for (auto& icon : icon_layer.IconsMilitary) {
                         icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
@@ -1349,6 +1445,7 @@ class World{
     };
 
 int main(int argc, char* args[]) {
+    std::cout<<"Initializing AWS, it'll take a second..."<<std::endl;
     std::string command = "AWSlistbucket.exe";
     int AWSlistbucket_exitcode = std::system(command.c_str());
     if (AWSlistbucket_exitcode == 0) {
@@ -1477,6 +1574,7 @@ int main(int argc, char* args[]) {
     bool moving_icon = false;
     bool rotating_icon = false;
     bool editing_map = false;
+    int brush_tool = 0;
     int selected_icon_id;
     int selected_icon_class;
     int selected_country_id = 0;
@@ -1485,6 +1583,7 @@ int main(int argc, char* args[]) {
     float pan_offset_x = 0.0f;
     float pan_offset_y = 0.0f;
     bool popup = false;
+    int brush_radius = 10;
 
     SDL_FRect texture_rect = {0, 0, (float)world_width_lower, (float)world_height_lower};
     SDL_FRect intersect;
@@ -1582,11 +1681,17 @@ int main(int argc, char* args[]) {
                                 }
 
                                 if(referenced_idmap){
-                                    lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
+                                    lockRect = { locking_coordinate_x - brush_radius, locking_coordinate_y - brush_radius, brush_radius*2+1, brush_radius*2+1 };
+                                    if(is_upper_layer){ClampRectToTexture(lockRect, world_width_upper, world_height_upper);}else{ClampRectToTexture(lockRect, world_width_lower, world_height_lower);};
                                     SDL_Texture* referenced_texture = referenced_layer.layer_texture;
                                     SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
                                     Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                                    pixels[0] = color;
+                                    if(brush_tool==0) PaintBrush(pixels, pitch, brush_radius, color);
+                                    if(brush_tool==1) {
+                                        Uint32 gotten_target_color = GetPixel(pixels, pitch, brush_radius, brush_radius);
+                                        PaintFill(pixels, pitch, brush_radius, gotten_target_color, color);
+                                    }
+
                                     SDL_UnlockTexture(referenced_texture);
                                 } else {
                                     std::cout<<"Debug::ReferencedIDmap::Invalid/None"<<std::endl;
@@ -1617,11 +1722,17 @@ int main(int argc, char* args[]) {
                                     continue;
                                 }
                                 if(referenced_idmap){
-                                    lockRect = { upper_textureX, upper_textureY, 1, 1 };
+                                    lockRect = { upper_textureX - brush_radius, upper_textureY - brush_radius, brush_radius*2+1, brush_radius*2+1 };
+                                    ClampRectToTexture(lockRect, upper_textureX, upper_textureY);
                                     SDL_Texture* referenced_texture = referenced_layer.layer_texture;
                                     SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
                                     Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                                    pixels[0] = color;
+                                    if(brush_tool==0) PaintBrush(pixels, pitch, brush_radius, color);
+                                    if(brush_tool==1) {
+                                        Uint32 gotten_target_color = GetPixel(pixels, pitch, brush_radius, brush_radius);
+                                        PaintFill(pixels, pitch, brush_radius, gotten_target_color, color);
+                                    }
+
                                     SDL_UnlockTexture(referenced_texture);
                                 } else {
                                     std::cout<<"Debug::ReferencedIDmap::Invalid/None"<<std::endl;
@@ -1688,10 +1799,21 @@ int main(int argc, char* args[]) {
                         }
                         
                         if (closest_civilian != nullptr){ 
+                            if (world.selected_world_icon!=nullptr) {
+                                world.selected_world_icon->SetSelectionStatus(false);
+                            }
                             world.selected_world_icon = closest_civilian;
+                            world.selected_world_icon->SetSelectionStatus(true);
                         } else if (closest_military != nullptr){ 
+                            if (world.selected_world_icon!=nullptr) {
+                                world.selected_world_icon->SetSelectionStatus(false);
+                            }
                             world.selected_world_icon = closest_military; 
+                            world.selected_world_icon->SetSelectionStatus(true);
                         } else {
+                            if (world.selected_world_icon!=nullptr) {
+                                world.selected_world_icon->SetSelectionStatus(false);
+                            }
                             world.selected_world_icon = nullptr;
                         }
 
@@ -1794,14 +1916,20 @@ int main(int argc, char* args[]) {
                                 }
 
                                 if(referenced_idmap){
-                                    lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
+                                    lockRect = { locking_coordinate_x - brush_radius, locking_coordinate_y - brush_radius, brush_radius*2+1, brush_radius*2+1 };
+                                    if(is_upper_layer){ClampRectToTexture(lockRect, world_width_upper, world_height_upper);}else{ClampRectToTexture(lockRect, world_width_lower, world_height_lower);};
                                     SDL_Texture* referenced_texture = referenced_layer.layer_texture;
                                     SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
                                     Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                                    pixels[0] = color;
+                                    if(brush_tool==0) PaintBrush(pixels, pitch, brush_radius, color);
+                                    if(brush_tool==1) {
+                                        Uint32 gotten_target_color = GetPixel(pixels, pitch, brush_radius, brush_radius);
+                                        PaintFill(pixels, pitch, brush_radius, gotten_target_color, color);
+                                    }
+
                                     SDL_UnlockTexture(referenced_texture);
                                 } else {
-                                    std::cout<<"Debug::ReferencedIDmap::Invalid/None"<<std::endl;
+                                    std::cout<<"Debug::ReferencedIDmap::Invalid/None "<<brush_tool<<std::endl;
                                 }
                             }
                         } else if(selected_layer_type==3){
@@ -1829,11 +1957,17 @@ int main(int argc, char* args[]) {
                                     continue;
                                 }
                                 if(referenced_idmap){
-                                    lockRect = { upper_textureX, upper_textureY, 1, 1 };
+                                    lockRect = { upper_textureX - brush_radius, upper_textureY - brush_radius, brush_radius*2+1, brush_radius*2+1 };
+                                    ClampRectToTexture(lockRect, upper_textureX, upper_textureY);
                                     SDL_Texture* referenced_texture = referenced_layer.layer_texture;
                                     SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
                                     Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                                    pixels[0] = color;
+                                    if(brush_tool==0) PaintBrush(pixels, pitch, brush_radius, color);
+                                    if(brush_tool==1) {
+                                        Uint32 gotten_target_color = GetPixel(pixels, pitch, brush_radius, brush_radius);
+                                        PaintFill(pixels, pitch, brush_radius, gotten_target_color, color);
+                                    }
+
                                     SDL_UnlockTexture(referenced_texture);
                                 } else {
                                     std::cout<<"Debug::ReferencedIDmap::Invalid/None"<<std::endl;
@@ -3212,31 +3346,49 @@ int main(int argc, char* args[]) {
                 }
             }
 
+            static int brushtool_radio = 0;
+
+            if (editing_map==true){
+                ImGui::InputInt("Set Brush Size", &brush_radius);
+
+                if (ImGui::RadioButton("Brush", &brushtool_radio, 0)) brush_tool = 0;
+                if (ImGui::RadioButton("Fill", &brushtool_radio, 1)) brush_tool = 1;
+                // if (ImGui::RadioButton("Line", &brushtool_radio, 2)); //selected_linetool = "remove";
+                // if (ImGui::RadioButton("Copy", &brushtool_radio, 3)); //selected_linetool = "remove";
+            }
+
             ImGui::Separator();
             ImGui::Text("Line tools");
+
+            static int linetool_radio = 0;
+            if (ImGui::RadioButton("none", &linetool_radio, 0)) selected_linetool = "";
+            ImGui::SameLine();
+            if (ImGui::RadioButton("add", &linetool_radio, 1)) selected_linetool = "add";
+            ImGui::SameLine();
+            if (ImGui::RadioButton("delete", &linetool_radio, 2)) selected_linetool = "remove";
 
             if(ENABLE_TIPS==true){
                 ImGui::TextColored(info_color, "You can create lines/shapes by using the line tools below.\nYou can click anywhere to place points\nand when done, you may press right click to finish.");
             }
 
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "Click to start placing points for a new shape.");
-            }
-            if(ImGui::Button("Add points")){
-                selected_linetool = "add";
-            }
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "Click to start deleting points in shapes.");
-            }
-            if(ImGui::Button("Remove points")){
-                selected_linetool = "remove";
-            }
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "Deselect line modification tools.");
-            }
-            if(ImGui::Button("Deselect")){
-                selected_linetool = "";
-            }
+            // if(ENABLE_TIPS==true){
+            //     ImGui::TextColored(info_color, "Click to start placing points for a new shape.");
+            // }
+            // if(ImGui::Button("Add points")){
+            //     selected_linetool = "add";
+            // }
+            // if(ENABLE_TIPS==true){
+            //     ImGui::TextColored(info_color, "Click to start deleting points in shapes.");
+            // }
+            // if(ImGui::Button("Remove points")){
+            //     selected_linetool = "remove";
+            // }
+            // if(ENABLE_TIPS==true){
+            //     ImGui::TextColored(info_color, "Deselect line modification tools.");
+            // }
+            // if(ImGui::Button("Deselect")){
+            //     selected_linetool = "";
+            // }
             
             ImGui::EndPopup();
         }
