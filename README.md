@@ -1,4 +1,5 @@
-# Nationwider-C
+# Nationwider C++
+## AWS integration
 Rewritten Nationwider tool in C++, using SDL3 as a graphics lib
 
 With additional SDL3_image library.
