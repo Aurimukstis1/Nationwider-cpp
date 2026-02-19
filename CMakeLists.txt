@@ -6,14 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(sdl3 STATIC IMPORTED)
 set_target_properties(sdl3 PROPERTIES
-    IMPORTED_LOCATION "C:/libraries/SDL3-3.4.0/lib/x64/SDL3.lib"
-    INTERFACE_INCLUDE_DIRECTORIES "C:/libraries/SDL3-3.4.0/include"
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/SDL3-3.4.0/lib/x64/SDL3.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/SDL3-3.4.0/include"
 )
 
 add_library(sdl3_image STATIC IMPORTED)
 set_target_properties(sdl3_image PROPERTIES
-    IMPORTED_LOCATION "C:/libraries/SDL3_image-3.4.0/lib/x64/SDL3_image.lib"
-    INTERFACE_INCLUDE_DIRECTORIES "C:/libraries/SDL3_image-3.4.0/include"
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/SDL3_image-3.4.0/lib/x64/SDL3_image.lib"
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/SDL3_image-3.4.0/include"
 )
 
 set(IMGUI_SRC

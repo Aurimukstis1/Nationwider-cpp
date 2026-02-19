@@ -20,6 +20,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include <queue>
+#include <deque>
 
 // --- CONFIG ---
 
@@ -196,6 +197,9 @@ struct IconBase {
     virtual void SetPosition(float x_, float y_) = 0;
     virtual void SetIconId(int id) = 0;
 
+    virtual void SetDescription(const std::string& description) = 0;
+    virtual std::string GetDescription() const = 0;
+
     virtual void SetSelectionStatus(bool input_boolean) = 0;
 
     virtual void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map) = 0;
@@ -218,6 +222,7 @@ struct IconCivilian : public IconBase {
     float scale=1.0f;
     int icon_id;
     bool selected = false;
+    std::string description = "";
 
     SDL_FRect viewport_local;
 
@@ -234,6 +239,14 @@ struct IconCivilian : public IconBase {
         position.x = x_;
         position.y = y_;
     } 
+
+    void SetDescription(const std::string& desc) {
+        description = desc;
+    }
+
+    std::string GetDescription() const {
+        return description;
+    }
 
     void SetSelectionStatus(bool input_boolean) { selected = input_boolean; }
 
@@ -316,7 +329,8 @@ struct IconMilitary : public IconBase {
     float width, height, scale=1.0f, angle=0.0;
     int icon_id=0, country_id=0, quality=0;
     bool selected = false;
-    std::vector<IconDecorator> decorators;
+    std::deque<IconDecorator> decorators;
+    std::string description = "";
 
     SDL_FRect viewport_local;
     SDL_FRect viewport_local_decorator;
@@ -336,6 +350,14 @@ struct IconMilitary : public IconBase {
         position.x = x_;
         position.y = y_;
     } 
+
+    void SetDescription(const std::string& desc) {
+        description = desc;
+    }
+
+    std::string GetDescription() const {
+        return description;
+    }
 
     void SetIconId(int id) { icon_id = id; }
 
@@ -556,27 +578,29 @@ struct IconLayer{
     std::string layer_name;
     bool visible = true;
 
-    std::vector<IconCivilian> IconsCivilian;
-    std::vector<IconMilitary> IconsMilitary;
-    std::vector<Shape> Shapes;
+    std::deque<IconCivilian> IconsCivilian;
+    std::deque<IconMilitary> IconsMilitary;
+    std::deque<Shape> Shapes;
 
-    IconCivilian& create_civilian_icon(SDL_Renderer* renderer, int icon_id, float pos_x, float pos_y, std::unordered_map<int, std::string>& idmap){
+    IconCivilian& create_civilian_icon(SDL_Renderer* renderer, int icon_id, float pos_x, float pos_y, std::unordered_map<int, std::string>& idmap, std::string description = ""){
         IconCivilian icon;
         icon.icon_id = icon_id;
         icon.position.x = pos_x;
         icon.position.y = pos_y;
         icon.set_texture(renderer, idmap);
+        icon.SetDescription(description);
         IconsCivilian.push_back(icon);
 
         return IconsCivilian.back();
     }
 
-    IconMilitary& create_military_icon(SDL_Renderer* renderer, int icon_id, float pos_x, float pos_y, std::unordered_map<int, std::string>& idmap){
+    IconMilitary& create_military_icon(SDL_Renderer* renderer, int icon_id, float pos_x, float pos_y, std::unordered_map<int, std::string>& idmap, std::string description = ""){
         IconMilitary icon;
         icon.icon_id = icon_id;
         icon.position.x = pos_x;
         icon.position.y = pos_y;
         icon.set_texture(renderer, idmap);
+        icon.SetDescription(description);
         IconsMilitary.push_back(icon);
 
         return IconsMilitary.back();
@@ -632,7 +656,7 @@ struct PoliticalLayer{
     SDL_Texture* layer_texture;
     SDL_Texture* shadow_texture;
 
-    void update_texture(std::vector<IDmap> IDmaps){
+    void update_texture(std::deque<IDmap> IDmaps){
         if(!world_layer) return;
 
         IDmap* referenced_id_map = nullptr;
@@ -648,11 +672,11 @@ struct PoliticalLayer{
         void* world_pixels;
         int world_pitch;
 
-        if (SDL_LockTexture(shadow_texture, nullptr, (void**)&shadow_pixels, &shadow_pitch) < 0) {
+        if (!SDL_LockTexture(shadow_texture, nullptr, (void**)&shadow_pixels, &shadow_pitch)) {
             std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
             return;
         }
-        if (SDL_LockTexture(world_layer->layer_texture, nullptr, (void**)&world_pixels, &world_pitch) < 0) {
+        if (!SDL_LockTexture(world_layer->layer_texture, nullptr, (void**)&world_pixels, &world_pitch)) {
             std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
             return;
         }
@@ -678,11 +702,11 @@ struct PoliticalLayer{
         SDL_UnlockTexture(world_layer->layer_texture);
     }
 
-    void bake_texture(std::vector<IDmap> IDmaps){
+    void bake_texture(std::deque<IDmap> IDmaps){
         void* layer_pixels;
         int layer_pitch;
 
-        if (SDL_LockTexture(layer_texture, nullptr, (void**)&layer_pixels, &layer_pitch) < 0) {
+        if (!SDL_LockTexture(layer_texture, nullptr, (void**)&layer_pixels, &layer_pitch)) {
             std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
             return;
         }
@@ -714,744 +738,769 @@ IconCivilian* FindClosestCivilianIcon(std::vector<IconCivilian>& vector_items, d
 
 class World{
     private:
-        std::vector<IconLayer> IconLayers;
-        std::vector<WorldLayer> WorldLayers;
-        std::vector<PoliticalLayer> PoliticalLayers;
-        std::string last_created_layer_name = "name";
+    std::deque<IconLayer> IconLayers;
+    std::deque<WorldLayer> WorldLayers;
+    std::deque<PoliticalLayer> PoliticalLayers;
+    std::string last_created_layer_name = "name";
 
     public:
-        bool WORLD_HAS_INITIALIZED = false;
+    bool WORLD_HAS_INITIALIZED = false;
 
-        int UPPER_WORLD_WIDTH=0; // number of chunks along the X-axis, i.e bigger sections of tiles
-        int UPPER_WORLD_HEIGHT=0; // number of chunks along the Y-axis, i.e bigger sections of tiles
-        int CHUNK_WIDTH=0; // Number of tiles in a chunk along the X-axis
-        int CHUNK_HEIGHT=0; // Number of tiles in a chunk along the Y-axis
-        int LOWER_WORLD_WIDTH=0; // Total number of tiles along the X-axis
-        int LOWER_WORLD_HEIGHT=0; // Total number of tiles along the Y-axis
+    int UPPER_WORLD_WIDTH=0; // number of chunks along the X-axis, i.e bigger sections of tiles
+    int UPPER_WORLD_HEIGHT=0; // number of chunks along the Y-axis, i.e bigger sections of tiles
+    int CHUNK_WIDTH=0; // Number of tiles in a chunk along the X-axis
+    int CHUNK_HEIGHT=0; // Number of tiles in a chunk along the Y-axis
+    int LOWER_WORLD_WIDTH=0; // Total number of tiles along the X-axis
+    int LOWER_WORLD_HEIGHT=0; // Total number of tiles along the Y-axis
 
-        std::vector<IDmap> IDmaps;
-        std::unordered_map<int, std::string> CivilianIdMap;
-        std::unordered_map<int, std::string> MilitaryIdMap;
-        std::unordered_map<int, std::string> MarkerIdMap;
-        std::unordered_map<int, std::string> DecoratorIdMap;
-        
-        IconBase* selected_world_icon = nullptr;
+    std::deque<IDmap> IDmaps;
+    std::unordered_map<int, std::string> CivilianIdMap;
+    std::unordered_map<int, std::string> MilitaryIdMap;
+    std::unordered_map<int, std::string> MarkerIdMap;
+    std::unordered_map<int, std::string> DecoratorIdMap;
+    
+    IconBase* selected_world_icon = nullptr;
 
-        bool HasInitializedCheck() {
-            if(UPPER_WORLD_HEIGHT>0 && CHUNK_WIDTH>0){
-                return true;
-            } else {
-                return false;
-            }
+    bool HasInitializedCheck() {
+        if(UPPER_WORLD_HEIGHT>0 && CHUNK_WIDTH>0){
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    void toggle_visibility_layer(const std::string& name_id) {
+        if(get_layer_type(name_id)==1){
+            WorldLayer& it = get_worldlayer(name_id);
+            it.visible = !it.visible;
+            std::cout<<"Debug::WorldLayer::Visibility::"<<it.visible<<std::endl;
+        }
+        if(get_layer_type(name_id)==2){
+            IconLayer& it = get_iconlayer(name_id);
+            it.visible = !it.visible;
+            std::cout<<"Debug::IconLayer::Visibility::"<<it.visible<<std::endl;
+        }
+        if(get_layer_type(name_id)==3){
+            PoliticalLayer& it = get_politicallayer(name_id);
+            it.visible = !it.visible;
+            std::cout<<"Debug::PoliticalLayer::Visibility::"<<it.visible<<std::endl;
+        }
+    }
+
+    std::deque<IconLayer>& GetIconLayers() { return IconLayers; }
+
+    std::deque<WorldLayer>& GetWorldLayers() { return WorldLayers; }
+
+    std::deque<PoliticalLayer>& GetPoliticalLayers() { return PoliticalLayers; }
+
+    void MoveIconLayer(size_t index, bool down) {
+        if(down){
+            if (index == 0 || index >= IconLayers.size()) return;
+            std::swap(IconLayers[index], IconLayers[index - 1]);
+        } else {
+            if (index >= IconLayers.size() - 1) return;
+            std::swap(IconLayers[index], IconLayers[index + 1]);
+        }
+    }
+
+    void MoveWorldLayer(size_t index, bool down) {
+        if(down){
+            if (index == 0 || index >= WorldLayers.size()) return;
+            std::swap(WorldLayers[index], WorldLayers[index - 1]);
+        } else {
+            if (index >= WorldLayers.size() - 1) return;
+            std::swap(WorldLayers[index], WorldLayers[index + 1]);
+        }
+    }
+
+    void MovePoliticalLayer(size_t index, bool down) {
+        if(down){
+            if (index == 0 || index >= PoliticalLayers.size()) return;
+            std::swap(PoliticalLayers[index], PoliticalLayers[index - 1]);
+        } else {
+            if (index >= PoliticalLayers.size() - 1) return;
+            std::swap(PoliticalLayers[index], PoliticalLayers[index + 1]);
+        }
+    }
+
+    void SaveWorld(std::string filename = "savename.nw", bool cloud = false) {
+        std::cout << "Debug::SaveWorld::" << filename << std::endl;
+        std::string full_filename = "saves/" + filename;
+
+        std::ofstream out(full_filename, std::ios::binary);
+        if (!out) {
+            std::cerr << "Failed to open save file\n";
+            return;
         }
 
-        void toggle_visibility_layer(const std::string& name_id) {
-            if(get_layer_type(name_id)==1){
-                WorldLayer& it = get_worldlayer(name_id);
-                it.visible = !it.visible;
-                std::cout<<"Debug::WorldLayer::Visibility::"<<it.visible<<std::endl;
-            }
-            if(get_layer_type(name_id)==2){
-                IconLayer& it = get_iconlayer(name_id);
-                it.visible = !it.visible;
-                std::cout<<"Debug::IconLayer::Visibility::"<<it.visible<<std::endl;
-            }
-            if(get_layer_type(name_id)==3){
-                PoliticalLayer& it = get_politicallayer(name_id);
-                it.visible = !it.visible;
-                std::cout<<"Debug::PoliticalLayer::Visibility::"<<it.visible<<std::endl;
-            }
-        }
+        // Write world dimensions
+        int32_t world_width  = UPPER_WORLD_WIDTH;
+        int32_t world_height = UPPER_WORLD_HEIGHT;
+        int32_t chunk_width  = CHUNK_WIDTH;
+        int32_t chunk_height = CHUNK_HEIGHT;
+        out.write(reinterpret_cast<char*>(&world_width), sizeof(world_width));
+        out.write(reinterpret_cast<char*>(&world_height), sizeof(world_height));
+        out.write(reinterpret_cast<char*>(&chunk_width), sizeof(chunk_width));
+        out.write(reinterpret_cast<char*>(&chunk_height), sizeof(chunk_height));
 
-        std::vector<IconLayer>& GetIconLayers() { return IconLayers; }
+        // Number of layers
+        int32_t num_layers_world = WorldLayers.size();
+        out.write(reinterpret_cast<char*>(&num_layers_world), sizeof(num_layers_world));
 
-        std::vector<WorldLayer>& GetWorldLayers() { return WorldLayers; }
+        int32_t num_layers_political = PoliticalLayers.size();
+        out.write(reinterpret_cast<char*>(&num_layers_political), sizeof(num_layers_political));
 
-        std::vector<PoliticalLayer>& GetPoliticalLayers() { return PoliticalLayers; }
+        int32_t num_layers_icon = IconLayers.size();
+        out.write(reinterpret_cast<char*>(&num_layers_icon), sizeof(num_layers_icon));
 
-        void MoveIconLayer(size_t index, bool down) {
-            if(down){
-                if (index == 0 || index >= IconLayers.size()) return;
-                std::swap(IconLayers[index], IconLayers[index - 1]);
-            } else {
-                if (index >= IconLayers.size() - 1) return;
-                std::swap(IconLayers[index], IconLayers[index + 1]);
-            }
-        }
-
-        void MoveWorldLayer(size_t index, bool down) {
-            if(down){
-                if (index == 0 || index >= WorldLayers.size()) return;
-                std::swap(WorldLayers[index], WorldLayers[index - 1]);
-            } else {
-                if (index >= WorldLayers.size() - 1) return;
-                std::swap(WorldLayers[index], WorldLayers[index + 1]);
-            }
-        }
-
-        void MovePoliticalLayer(size_t index, bool down) {
-            if(down){
-                if (index == 0 || index >= PoliticalLayers.size()) return;
-                std::swap(PoliticalLayers[index], PoliticalLayers[index - 1]);
-            } else {
-                if (index >= PoliticalLayers.size() - 1) return;
-                std::swap(PoliticalLayers[index], PoliticalLayers[index + 1]);
-            }
-        }
-
-        void SaveWorld(std::string filename = "savename.nw", bool cloud = false) {
-            std::cout << "Debug::SaveWorld::" << filename << std::endl;
-            std::string full_filename = "saves/" + filename;
-
-            std::ofstream out(full_filename, std::ios::binary);
-            if (!out) {
-                std::cerr << "Failed to open save file\n";
-                return;
-            }
-
-            // Write world dimensions
-            int32_t world_width  = UPPER_WORLD_WIDTH;
-            int32_t world_height = UPPER_WORLD_HEIGHT;
-            int32_t chunk_width  = CHUNK_WIDTH;
-            int32_t chunk_height = CHUNK_HEIGHT;
-            out.write(reinterpret_cast<char*>(&world_width), sizeof(world_width));
-            out.write(reinterpret_cast<char*>(&world_height), sizeof(world_height));
-            out.write(reinterpret_cast<char*>(&chunk_width), sizeof(chunk_width));
-            out.write(reinterpret_cast<char*>(&chunk_height), sizeof(chunk_height));
-
-            // Number of layers
-            int32_t num_layers_world = WorldLayers.size();
-            out.write(reinterpret_cast<char*>(&num_layers_world), sizeof(num_layers_world));
-
-            int32_t num_layers_political = PoliticalLayers.size();
-            out.write(reinterpret_cast<char*>(&num_layers_political), sizeof(num_layers_political));
-
-            int32_t num_layers_icon = IconLayers.size();
-            out.write(reinterpret_cast<char*>(&num_layers_icon), sizeof(num_layers_icon));
-
-            // World layers
-            for (auto& world_layer : WorldLayers) {
-                // Find referenced IDmap
-                IDmap* referenced_id_map = nullptr;
-                for (auto& id_map : IDmaps) {
-                    if (id_map.name == world_layer.idmap_name) {
-                        referenced_id_map = &id_map;
-                        break;
-                    }
+        // World layers
+        for (auto& world_layer : WorldLayers) {
+            // Find referenced IDmap
+            IDmap* referenced_id_map = nullptr;
+            for (auto& id_map : IDmaps) {
+                if (id_map.name == world_layer.idmap_name) {
+                    referenced_id_map = &id_map;
+                    break;
                 }
-                if (!referenced_id_map) {
-                    std::cerr << "No IDmap found for layer " << world_layer.layer_name << "\n";
+            }
+            if (!referenced_id_map) {
+                std::cerr << "No IDmap found for layer " << world_layer.layer_name << "\n";
+                continue;
+            }
+
+            // Query texture
+            SDL_PixelFormat format = world_layer.layer_texture->format;
+            int width = world_layer.layer_texture->w; 
+            int height = world_layer.layer_texture->h;
+            const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(format);
+
+            // Lock texture
+            void* pixels;
+            int pitch;
+            if (!SDL_LockTexture(world_layer.layer_texture, nullptr, &pixels, &pitch)) {
+                std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
+                continue;
+            }
+
+            // Metadata / header stuff
+            int32_t lnameLen = world_layer.layer_name.size();
+            out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
+            out.write(world_layer.layer_name.data(), lnameLen);
+
+            int32_t idnameLen = world_layer.idmap_name.size();
+            out.write(reinterpret_cast<char*>(&idnameLen), sizeof(idnameLen));
+            out.write(world_layer.idmap_name.data(), idnameLen);
+
+            int32_t w = width, h = height;
+            out.write(reinterpret_cast<char*>(&w), sizeof(w));
+            out.write(reinterpret_cast<char*>(&h), sizeof(h));
+
+            uint8_t isUpper = world_layer.is_upper ? 1 : 0;
+            out.write(reinterpret_cast<char*>(&isUpper), sizeof(isUpper));
+
+            // Streaming pixel to file
+            std::vector<uint8_t> rowBuffer(width);
+
+            uint8_t* row = static_cast<uint8_t*>(pixels);
+            for (int y = 0; y < height; ++y) {
+                Uint32* px = reinterpret_cast<Uint32*>(row);
+                for (int x = 0; x < width; ++x) {
+                    Uint32 pixel = px[x];
+
+                    Uint8 r = (pixel >> 24) & 0xFF;
+                    Uint8 g = (pixel >> 16) & 0xFF;
+                    Uint8 b = (pixel >> 8)  & 0xFF;
+
+                    uint32_t key = (r << 16) | (g << 8) | b;
+                    uint8_t index = referenced_id_map->id_LUT[key];
+                    if (index == 0xFF) index = 255;
+
+                    rowBuffer[x] = index;
+                }
+                out.write(reinterpret_cast<char*>(rowBuffer.data()), width); // flush row
+                row += pitch;
+            }
+
+            SDL_UnlockTexture(world_layer.layer_texture);
+            std::cout << "Debug::LayerSaved::" << world_layer.layer_name << std::endl;
+        }
+
+        // Political layers
+        for (auto& political_layer : PoliticalLayers) {
+            // Find referenced IDmap
+            IDmap* referenced_id_map = nullptr;
+            for (auto& id_map : IDmaps) {
+                if (id_map.name == political_layer.idmap_name) {
+                    referenced_id_map = &id_map;
+                    break;
+                }
+            }
+            if (!referenced_id_map) {
+                std::cerr << "No IDmap found for layer " << political_layer.layer_name << "\n";
+                continue;
+            }
+
+            // Query texture
+            SDL_PixelFormat format = political_layer.layer_texture->format;
+            int width = political_layer.layer_texture->w; 
+            int height = political_layer.layer_texture->h;
+            const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(format);
+
+            // Lock texture
+            void* pixels;
+            int pitch;
+            if (!SDL_LockTexture(political_layer.layer_texture, nullptr, &pixels, &pitch)) {
+                std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
+                continue;
+            }
+
+            // Metadata / header stuff
+            int32_t lnameLen = political_layer.layer_name.size();
+            out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
+            out.write(political_layer.layer_name.data(), lnameLen);
+
+            int32_t idnameLen = political_layer.idmap_name.size();
+            out.write(reinterpret_cast<char*>(&idnameLen), sizeof(idnameLen));
+            out.write(political_layer.idmap_name.data(), idnameLen);
+
+            int32_t world_layer_name_len = political_layer.world_layer->layer_name.size();
+            out.write(reinterpret_cast<char*>(&world_layer_name_len), sizeof(world_layer_name_len));
+            out.write(political_layer.world_layer->layer_name.data(), world_layer_name_len);
+
+            int32_t w = width, h = height;
+            out.write(reinterpret_cast<char*>(&w), sizeof(w));
+            out.write(reinterpret_cast<char*>(&h), sizeof(h));
+
+            // Streaming pixel to file
+            std::vector<uint8_t> rowBuffer(width);
+
+            uint8_t* row = static_cast<uint8_t*>(pixels);
+            for (int y = 0; y < height; ++y) {
+                Uint32* px = reinterpret_cast<Uint32*>(row);
+                for (int x = 0; x < width; ++x) {
+                    Uint32 pixel = px[x];
+
+                    Uint8 r = (pixel >> 24) & 0xFF;
+                    Uint8 g = (pixel >> 16) & 0xFF;
+                    Uint8 b = (pixel >> 8)  & 0xFF;
+
+                    uint32_t key = (r << 16) | (g << 8) | b;
+                    uint8_t index = referenced_id_map->id_LUT[key];
+
+                    rowBuffer[x] = index;
+                }
+                out.write(reinterpret_cast<char*>(rowBuffer.data()), width); // flush row
+                row += pitch;
+            }
+
+            SDL_UnlockTexture(political_layer.layer_texture);
+            std::cout << "Debug::LayerSaved::" << political_layer.layer_name << std::endl;
+        }
+
+        // Icon layers
+        for (auto& icon_layer : IconLayers) {
+            // Layer name
+            int32_t lnameLen = icon_layer.layer_name.size();
+            out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
+            out.write(icon_layer.layer_name.data(), lnameLen);
+
+            // Civilian icons
+            int32_t num_civilian_icons = icon_layer.IconsCivilian.size();
+            out.write(reinterpret_cast<char*>(&num_civilian_icons), sizeof(num_civilian_icons));
+
+            for (auto& icon : icon_layer.IconsCivilian) {
+                out.write(reinterpret_cast<char*>(&icon.icon_id), sizeof(icon.icon_id));
+                out.write(reinterpret_cast<char*>(&icon.position.x), sizeof(icon.position.x));
+                out.write(reinterpret_cast<char*>(&icon.position.y), sizeof(icon.position.y));
+
+                std::uint64_t description_size = icon.description.size();
+                out.write(reinterpret_cast<const char*>(&description_size), sizeof(description_size));
+                out.write(icon.description.data(), description_size);
+            }
+
+            // Military icons
+            int32_t num_military_icons = icon_layer.IconsMilitary.size();
+            out.write(reinterpret_cast<char*>(&num_military_icons), sizeof(num_military_icons));
+
+            for (auto& icon : icon_layer.IconsMilitary) {
+                out.write(reinterpret_cast<char*>(&icon.icon_id), sizeof(icon.icon_id));
+                out.write(reinterpret_cast<char*>(&icon.angle), sizeof(icon.angle));
+                out.write(reinterpret_cast<char*>(&icon.country_id), sizeof(icon.country_id));
+                out.write(reinterpret_cast<char*>(&icon.quality), sizeof(icon.quality));
+                out.write(reinterpret_cast<char*>(&icon.position.x), sizeof(icon.position.x));
+                out.write(reinterpret_cast<char*>(&icon.position.y), sizeof(icon.position.y));
+
+                std::uint64_t description_size = icon.description.size();
+                out.write(reinterpret_cast<const char*>(&description_size), sizeof(description_size));
+                out.write(icon.description.data(), description_size);
+
+                int32_t num_decorators = icon.decorators.size();
+                out.write(reinterpret_cast<char*>(&num_decorators), sizeof(num_decorators));
+                for (auto& decorator : icon.decorators) {
+                    out.write(reinterpret_cast<char*>(&decorator.id), sizeof(decorator.id));
+                }
+            }
+
+            // Shapes
+            int32_t num_shapes = icon_layer.Shapes.size();
+            out.write(reinterpret_cast<char*>(&num_shapes), sizeof(num_shapes));
+
+            for (auto& shape : icon_layer.Shapes) {
+                out.write(reinterpret_cast<char*>(&shape.r), sizeof(shape.r));
+                out.write(reinterpret_cast<char*>(&shape.g), sizeof(shape.g));
+                out.write(reinterpret_cast<char*>(&shape.b), sizeof(shape.b));
+                out.write(reinterpret_cast<char*>(&shape.a), sizeof(shape.a));
+
+                int32_t num_points = shape.GetSize();
+                out.write(reinterpret_cast<char*>(&num_points), sizeof(num_points));
+
+                for (int i = 0; i < num_points; ++i) {
+                    out.write(reinterpret_cast<char*>(&shape.point_array[i].x), sizeof(shape.point_array[i].x));
+                    out.write(reinterpret_cast<char*>(&shape.point_array[i].y), sizeof(shape.point_array[i].y));
+                }
+            }
+        }
+
+        std::cout << "Debug::World saved successfully to " << filename << std::endl;
+        out.close();
+
+        if(cloud) {
+            std::string command = "AWSupload.exe " + filename;
+            int AWSupload_exitcode = std::system(command.c_str());
+            if (AWSupload_exitcode == 0) {
+                std::cout << "AWSupload completed successfully: " << AWSupload_exitcode << std::endl;
+            } else {
+                std::cout << "AWSupload failed to upload: " << AWSupload_exitcode << std::endl;
+            }
+        }
+    }
+
+    void discover_icons() {
+        std::regex pattern(R"((\d+)_([a-zA-Z0-9]+)\.(png))");
+
+        for (const auto &entry : std::filesystem::directory_iterator("icons/civilian")) {
+            if (!entry.is_regular_file())
+                continue;
+
+            std::string filename = entry.path().filename().string();
+            std::smatch matches;
+            
+            if (std::regex_match(filename, matches, pattern)) {
+                int id = std::stoi(matches[1].str());
+                std::string name = matches[2].str();
+                CivilianIdMap[id] = name;
+            }
+        }
+        // for (const auto &[id, name] : CivilianIdMap) {
+        //     std::cout << "Civilian ID: " << id << " => Name: " << name << std::endl;
+        // }
+
+        for (const auto &entry : std::filesystem::directory_iterator("icons/military")) {
+            if (!entry.is_regular_file())
+                continue;
+
+            std::string filename = entry.path().filename().string();
+            std::smatch matches;
+            
+            if (std::regex_match(filename, matches, pattern)) {
+                int id = std::stoi(matches[1].str());
+                std::string name = matches[2].str();
+                MilitaryIdMap[id] = name;
+            }
+        }
+        // for (const auto &[id, name] : MilitaryIdMap) {
+        //     std::cout << "Military ID: " << id << " => Name: " << name << std::endl;
+        // }
+
+        for (const auto &entry : std::filesystem::directory_iterator("icons/markers")) {
+            if (!entry.is_regular_file())
+                continue;
+
+            std::string filename = entry.path().filename().string();
+            std::smatch matches;
+            
+            if (std::regex_match(filename, matches, pattern)) {
+                int id = std::stoi(matches[1].str());
+                std::string name = matches[2].str();
+                MarkerIdMap[id] = name;
+            }
+        }
+        // for (const auto &[id, name] : MarkerIdMap) {
+        //     std::cout << "Marker ID: " << id << " => Name: " << name << std::endl;
+        // }
+
+        for (const auto &entry : std::filesystem::directory_iterator("icons/decorator")) {
+            if (!entry.is_regular_file())
+                continue;
+
+            std::string filename = entry.path().filename().string();
+            std::smatch matches;
+            
+            if (std::regex_match(filename, matches, pattern)) {
+                int id = std::stoi(matches[1].str());
+                std::string name = matches[2].str();
+                DecoratorIdMap[id] = name;
+            }
+        }
+        // for (const auto &[id, name] : DecoratorIdMap) {
+        //     std::cout << "Decorator ID: " << id << " => Name: " << name << std::endl;
+        // }
+    }
+
+    void discover_ids() {
+        for (const auto &entry : std::filesystem::directory_iterator("ids")) {
+            if (!entry.is_regular_file())
+                continue;
+
+            std::ifstream file(entry.path());
+            if (!file.is_open()) {
+                std::cerr<<"Debug::OpenFile::Error::"<<entry.path().filename().string()<<std::endl;
+                continue;
+            }
+
+            std::string line;
+            IDmap temporary_map;
+            bool inSection = false;
+
+            while (std::getline(file, line)) {
+                if (line.rfind("...", 0) == 0) {
+                    if (line == "...;") {
+                        if (inSection) {
+                            temporary_map.buildFastLUT();
+                            IDmaps.push_back(temporary_map);
+                            temporary_map = IDmap();
+                            inSection = false;
+                        }
+                    } else {
+                        temporary_map = IDmap();
+                        temporary_map.name = line.substr(3);
+                        inSection = true;
+                    }
                     continue;
                 }
 
-                // Query texture
-                SDL_PixelFormat format = world_layer.layer_texture->format;
-                int width = world_layer.layer_texture->w; 
-                int height = world_layer.layer_texture->h;
-                const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(format);
+                if (!inSection)
+                    continue;
 
-                // Lock texture
-                void* pixels;
-                int pitch;
-                if (SDL_LockTexture(world_layer.layer_texture, nullptr, &pixels, &pitch) < 0) {
-                    std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
+                std::istringstream iss(line);
+                int id, r, g, b;
+                std::string text;
+
+                if (!(iss >> id >> r >> g >> b)) {
+                    std::cerr << "Debug::MalformedLine => " << line << std::endl;
                     continue;
                 }
 
-                // Metadata / header stuff
-                int32_t lnameLen = world_layer.layer_name.size();
-                out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
-                out.write(world_layer.layer_name.data(), lnameLen);
+                std::getline(iss, text);
+                if (!text.empty() && text[0] == ' ')
+                    text.erase(0, 1);
 
-                int32_t idnameLen = world_layer.idmap_name.size();
-                out.write(reinterpret_cast<char*>(&idnameLen), sizeof(idnameLen));
-                out.write(world_layer.idmap_name.data(), idnameLen);
-
-                int32_t w = width, h = height;
-                out.write(reinterpret_cast<char*>(&w), sizeof(w));
-                out.write(reinterpret_cast<char*>(&h), sizeof(h));
-
-                uint8_t isUpper = world_layer.is_upper ? 1 : 0;
-                out.write(reinterpret_cast<char*>(&isUpper), sizeof(isUpper));
-
-                // Streaming pixel to file
-                std::vector<uint8_t> rowBuffer(width);
-
-                uint8_t* row = static_cast<uint8_t*>(pixels);
-                for (int y = 0; y < height; ++y) {
-                    Uint32* px = reinterpret_cast<Uint32*>(row);
-                    for (int x = 0; x < width; ++x) {
-                        Uint32 pixel = px[x];
-
-                        Uint8 r = (pixel >> 24) & 0xFF;
-                        Uint8 g = (pixel >> 16) & 0xFF;
-                        Uint8 b = (pixel >> 8)  & 0xFF;
-
-                        uint32_t key = (r << 16) | (g << 8) | b;
-                        uint8_t index = referenced_id_map->id_LUT[key];
-                        if (index == 0xFF) index = 255;
-
-                        rowBuffer[x] = index;
-                    }
-                    out.write(reinterpret_cast<char*>(rowBuffer.data()), width); // flush row
-                    row += pitch;
-                }
-
-                SDL_UnlockTexture(world_layer.layer_texture);
-                std::cout << "Debug::LayerSaved::" << world_layer.layer_name << std::endl;
+                temporary_map.id_map[id] = std::make_tuple(r, g, b, text);
             }
 
-            // Political layers
-            for (auto& political_layer : PoliticalLayers) {
-                // Find referenced IDmap
-                IDmap* referenced_id_map = nullptr;
-                for (auto& id_map : IDmaps) {
-                    if (id_map.name == political_layer.idmap_name) {
-                        referenced_id_map = &id_map;
-                        break;
-                    }
-                }
-                if (!referenced_id_map) {
-                    std::cerr << "No IDmap found for layer " << political_layer.layer_name << "\n";
-                    continue;
-                }
-
-                // Query texture
-                SDL_PixelFormat format = political_layer.layer_texture->format;
-                int width = political_layer.layer_texture->w; 
-                int height = political_layer.layer_texture->h;
-                const SDL_PixelFormatDetails* fmt = SDL_GetPixelFormatDetails(format);
-
-                // Lock texture
-                void* pixels;
-                int pitch;
-                if (SDL_LockTexture(political_layer.layer_texture, nullptr, &pixels, &pitch) < 0) {
-                    std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
-                    continue;
-                }
-
-                // Metadata / header stuff
-                int32_t lnameLen = political_layer.layer_name.size();
-                out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
-                out.write(political_layer.layer_name.data(), lnameLen);
-
-                int32_t idnameLen = political_layer.idmap_name.size();
-                out.write(reinterpret_cast<char*>(&idnameLen), sizeof(idnameLen));
-                out.write(political_layer.idmap_name.data(), idnameLen);
-
-                int32_t world_layer_name_len = political_layer.world_layer->layer_name.size();
-                out.write(reinterpret_cast<char*>(&world_layer_name_len), sizeof(world_layer_name_len));
-                out.write(political_layer.world_layer->layer_name.data(), world_layer_name_len);
-
-                int32_t w = width, h = height;
-                out.write(reinterpret_cast<char*>(&w), sizeof(w));
-                out.write(reinterpret_cast<char*>(&h), sizeof(h));
-
-                // Streaming pixel to file
-                std::vector<uint8_t> rowBuffer(width);
-
-                uint8_t* row = static_cast<uint8_t*>(pixels);
-                for (int y = 0; y < height; ++y) {
-                    Uint32* px = reinterpret_cast<Uint32*>(row);
-                    for (int x = 0; x < width; ++x) {
-                        Uint32 pixel = px[x];
-
-                        Uint8 r = (pixel >> 24) & 0xFF;
-                        Uint8 g = (pixel >> 16) & 0xFF;
-                        Uint8 b = (pixel >> 8)  & 0xFF;
-
-                        uint32_t key = (r << 16) | (g << 8) | b;
-                        uint8_t index = referenced_id_map->id_LUT[key];
-
-                        rowBuffer[x] = index;
-                    }
-                    out.write(reinterpret_cast<char*>(rowBuffer.data()), width); // flush row
-                    row += pitch;
-                }
-
-                SDL_UnlockTexture(political_layer.layer_texture);
-                std::cout << "Debug::LayerSaved::" << political_layer.layer_name << std::endl;
+            if (inSection) {
+                temporary_map.buildFastLUT();
+                IDmaps.push_back(temporary_map);
             }
 
-            // Icon layers
-            for (auto& icon_layer : IconLayers) {
-                // Layer name
-                int32_t lnameLen = icon_layer.layer_name.size();
-                out.write(reinterpret_cast<char*>(&lnameLen), sizeof(lnameLen));
-                out.write(icon_layer.layer_name.data(), lnameLen);
+            file.close();
+        }
+        // for (auto& map : IDmaps) {
+        //     std::cout << "ID Map: " << map.name << std::endl;
+        // }
+    }
 
-                // Civilian icons
-                int32_t num_civilian_icons = icon_layer.IconsCivilian.size();
-                out.write(reinterpret_cast<char*>(&num_civilian_icons), sizeof(num_civilian_icons));
+    WorldLayer& create_worldlayer(SDL_Renderer* renderer, const std::string& name_id, bool is_upper, std::string selected_idmap) {
+        int width, height;
+        if (is_upper) {
+            width = UPPER_WORLD_WIDTH;
+            height = UPPER_WORLD_HEIGHT;
+        } else {
+            width = LOWER_WORLD_WIDTH;
+            height = LOWER_WORLD_HEIGHT;
+        }
+
+        if (width <= 0 || height <= 0) {
+            std::cerr << "Invalid texture size: " << width << " x " << height << std::endl;
+            throw std::runtime_error("Layer not found");
+        }
+
+        SDL_Texture *layer_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+
+        if (!layer_texture) {
+            SDL_Log("Failed to create texture '%s': %s", name_id.c_str(), SDL_GetError());
+            throw std::runtime_error("Layer not found");
+        }
+
+        SDL_SetTextureScaleMode(layer_texture, SDL_SCALEMODE_NEAREST);
+
+        WorldLayer world_layer;
+        world_layer.is_upper = is_upper;
+        if(name_id.length()!=0){
+            world_layer.layer_name = name_id;
+        } else {
+            world_layer.layer_name = last_created_layer_name+"_a";
+        }
+        world_layer.layer_texture = layer_texture;
+        world_layer.idmap_name = selected_idmap;
+
+        WorldLayers.push_back(world_layer);
+        std::cout<<"Debug::Created::WorldLayer::"<<world_layer.layer_name<<std::endl;
+        last_created_layer_name = world_layer.layer_name;
+        return WorldLayers.back();
+    }
+
+    PoliticalLayer& create_politicallayer(SDL_Renderer* renderer, const std::string& name_id, std::string selected_idmap, WorldLayer& linked_world_layer){
+        int width = UPPER_WORLD_WIDTH;
+        int height = UPPER_WORLD_HEIGHT;
+
+        if (width <= 0 || height <= 0) {
+            std::cerr << "Invalid texture size: " << width << " x " << height << std::endl;
+            throw std::runtime_error("Layer not found");
+        }
+
+        SDL_Texture *layer_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+        SDL_Texture *shadow_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, width, height);
+
+        if (!layer_texture || !shadow_texture) {
+            SDL_Log("Failed to create texture '%s': %s", name_id.c_str(), SDL_GetError());
+            throw std::runtime_error("Layer not found");
+        }
+
+        SDL_SetTextureScaleMode(layer_texture, SDL_SCALEMODE_NEAREST);
+        SDL_SetTextureScaleMode(shadow_texture, SDL_SCALEMODE_NEAREST);
+
+        PoliticalLayer political_layer;
+        political_layer.world_layer = &linked_world_layer;
+        if(name_id.length()!=0){
+            political_layer.layer_name = name_id;
+        } else {
+            political_layer.layer_name = last_created_layer_name+"_a";
+        }
+        political_layer.layer_texture = layer_texture;
+        political_layer.shadow_texture = shadow_texture;
+        political_layer.idmap_name = selected_idmap;
+
+        PoliticalLayers.push_back(political_layer);
+        std::cout<<"Debug::Created::PoliticalLayer::"<<political_layer.layer_name<<std::endl;
+        last_created_layer_name = political_layer.layer_name;
+        return PoliticalLayers.back();
+    }
+
+    IconLayer& create_iconlayer(const std::string& name_id) {
+        IconLayer icon_layer;
+        if(name_id.length()!=0){
+            icon_layer.layer_name = name_id;
+        } else {
+            icon_layer.layer_name = last_created_layer_name+"_a";
+        }
+        IconLayers.push_back(icon_layer);
+        std::cout<<"Debug::Created::IconLayer::"<<icon_layer.layer_name<<std::endl;
+        last_created_layer_name = icon_layer.layer_name;
+        return IconLayers.back();
+    }
+
+    IconLayer& get_iconlayer(const std::string& name_id) {
+        for (auto& layer : IconLayers) {
+            if (layer.layer_name == name_id) {
+                return layer;
+            }
+        }
+
+        throw std::runtime_error("Layer not found");
+    }
+
+    WorldLayer& get_worldlayer(const std::string& name_id) {
+        for (auto& layer : WorldLayers) {
+            if (layer.layer_name == name_id) {
+                return layer;
+            }
+        }
+
+        throw std::runtime_error("Layer not found");
+    }
+
+    PoliticalLayer& get_politicallayer(const std::string& name_id) {
+        for (auto& layer : PoliticalLayers) {
+            if (layer.layer_name == name_id) {
+                return layer;
+            }
+        }
+
+        throw std::runtime_error("Layer not found");
+    }
+
+    void remove_worldlayer(const std::string& name_id) {
+        for (auto it = WorldLayers.begin(); it != WorldLayers.end(); ) {
+            if (it->layer_name == name_id) {
+                it = WorldLayers.erase(it);
+                std::cout<<"Debug::Erased::Worldlayer::"<<it->layer_name<<std::endl;
+            } else {
+                std::cout<<"Debug::CheckingVector::CurrentVectorIterator::"<<it->layer_name<<std::endl;
+                ++it;
+            }
+        }
+    }
+
+    void remove_iconlayer(const std::string& name_id) {
+        for (auto it = IconLayers.begin(); it != IconLayers.end(); ) {
+            if (it->layer_name == name_id) {
+                it = IconLayers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    int get_layer_type(const std::string& name_id) {
+        for (auto& layer : WorldLayers) {
+            if (layer.layer_name == name_id) {
+                return 1;
+            }
+        }
+        for (auto& layer : IconLayers) {
+            if (layer.layer_name == name_id) {
+                return 2;
+            }
+        }
+        for (auto& layer : PoliticalLayers) {
+            if (layer.layer_name == name_id) {
+                return 3;
+            }
+        }
+        throw std::runtime_error("Layer not found");
+    }
+
+    void set_world_size(int w, int h) {
+        UPPER_WORLD_WIDTH = w;
+        UPPER_WORLD_HEIGHT = h;
+        std::cout<<"Set world to "<<w<<" "<<h<<std::endl;
+    }
+
+    std::tuple<int, int> get_world_size(bool is_upper) {
+        if (is_upper) {
+            if (UPPER_WORLD_WIDTH > 0 && UPPER_WORLD_HEIGHT > 0) {
+                return {UPPER_WORLD_WIDTH, UPPER_WORLD_HEIGHT};
+            } else {
+                printf("World doesn't have defined size yet.\n");
+                return {0, 0}; // default
+            }
+        } else {
+            if (UPPER_WORLD_WIDTH > 0 && UPPER_WORLD_HEIGHT > 0 && CHUNK_WIDTH > 0 && CHUNK_HEIGHT > 0) {
+                return {UPPER_WORLD_WIDTH * CHUNK_WIDTH, UPPER_WORLD_HEIGHT * CHUNK_HEIGHT};
+            } else {
+                printf("World doesn't have defined size or chunk size yet.\n");
+                return {0, 0}; // default
+            }
+        }
+    }
+
+    void set_chunk_size(int w, int h) {
+        CHUNK_WIDTH = w;
+        CHUNK_HEIGHT = h;
+
+        LOWER_WORLD_WIDTH = UPPER_WORLD_WIDTH*CHUNK_WIDTH;
+        LOWER_WORLD_HEIGHT = UPPER_WORLD_HEIGHT*CHUNK_HEIGHT;
+        std::cout<<"Set chunks to "<<w<<" "<<h<<" resulting in lower "<<LOWER_WORLD_WIDTH<<" "<<LOWER_WORLD_HEIGHT<<std::endl;
+    }
+
+    std::tuple<int,int> get_chunk_size() {
+        if(CHUNK_WIDTH>0 && CHUNK_HEIGHT>0){
+            std::tuple<int, int> chunk_size(CHUNK_WIDTH, CHUNK_HEIGHT);
+            return chunk_size;
+        } else {
+            printf("World doesn't have defined chunk size yet.");
+            return {0, 0}; // Default/fallback
+        }
+    }
+
+    void draw_all(SDL_Renderer* renderer, SDL_FRect* input_viewport_lower, SDL_FRect* input_viewport_upper, SDL_FRect* output_viewport, float scale_offset, float pan_offset_x, float pan_offset_y) {
+        for (auto& layer : WorldLayers) {
+            SDL_Texture* texture = layer.layer_texture;
+
+            if(layer.visible){
+                if(layer.is_upper){
+                    SDL_RenderTexture(renderer, texture, input_viewport_upper, output_viewport);
+                } else {
+                    SDL_RenderTexture(renderer, texture, input_viewport_lower, output_viewport);
+                }
+            }
+        };
+        for (auto& layer : PoliticalLayers) {
+            SDL_Texture* texture = layer.layer_texture;
+            SDL_Texture* shadow_texture = layer.shadow_texture;
+
+            if(layer.visible){
+                SDL_RenderTexture(renderer, texture, input_viewport_upper, output_viewport);
+                SDL_RenderTexture(renderer, shadow_texture, input_viewport_upper, output_viewport);
+            }
+        };
+        for (auto& icon_layer : IconLayers) {
+            const std::string& name = icon_layer.layer_name;
+            Uint8 r_, g_, b_, a_;
+
+            if(icon_layer.visible){
+                for (auto& shape : icon_layer.Shapes) {
+                    const SDL_FPoint* points = shape.GetPoints();
+                    const int size_of_array = shape.GetSize();
+
+                    std::vector<SDL_FPoint> screen_points(size_of_array);
+                    for (int i = 0; i < size_of_array; ++i) {
+                        screen_points[i].x = (points[i].x - pan_offset_x) * scale_offset;
+                        screen_points[i].y = (points[i].y - pan_offset_y) * scale_offset;
+                    }
+
+                    SDL_GetRenderDrawColor(renderer, &r_, &g_, &b_, &a_);
+                    // honestly don't know if it's even efficient to do it this way, of saving and re-using the pointers;
+
+                    SDL_SetRenderDrawColor(renderer, shape.r, shape.g, shape.b, shape.a);
+
+                    if (SDL_RenderLines(renderer, screen_points.data(), size_of_array)) {
+                        std::cerr << "Debug::RenderLines::Error::" << SDL_GetError() << std::endl;
+                    }
+
+                    SDL_SetRenderDrawColor(renderer, r_, g_, b_, a_);
+                }
 
                 for (auto& icon : icon_layer.IconsCivilian) {
-                    out.write(reinterpret_cast<char*>(&icon.icon_id), sizeof(icon.icon_id));
-                    out.write(reinterpret_cast<char*>(&icon.position.x), sizeof(icon.position.x));
-                    out.write(reinterpret_cast<char*>(&icon.position.y), sizeof(icon.position.y));
+                    icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
+                    // if (icon.GetPosition().x == selected_world_icon->GetPosition().x && icon.GetPosition().y == selected_world_icon->GetPosition().y) {
+
+                    // }
                 }
-
-                // Military icons
-                int32_t num_military_icons = icon_layer.IconsMilitary.size();
-                out.write(reinterpret_cast<char*>(&num_military_icons), sizeof(num_military_icons));
-
                 for (auto& icon : icon_layer.IconsMilitary) {
-                    out.write(reinterpret_cast<char*>(&icon.icon_id), sizeof(icon.icon_id));
-                    out.write(reinterpret_cast<char*>(&icon.angle), sizeof(icon.angle));
-                    out.write(reinterpret_cast<char*>(&icon.country_id), sizeof(icon.country_id));
-                    out.write(reinterpret_cast<char*>(&icon.quality), sizeof(icon.quality));
-                    out.write(reinterpret_cast<char*>(&icon.position.x), sizeof(icon.position.x));
-                    out.write(reinterpret_cast<char*>(&icon.position.y), sizeof(icon.position.y));
-
-                    int32_t num_decorators = icon.decorators.size();
-                    out.write(reinterpret_cast<char*>(&num_decorators), sizeof(num_decorators));
-                    for (auto& decorator : icon.decorators) {
-                        out.write(reinterpret_cast<char*>(&decorator.id), sizeof(decorator.id));
-                    }
+                    icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
                 }
-
-                // Shapes
-                int32_t num_shapes = icon_layer.Shapes.size();
-                out.write(reinterpret_cast<char*>(&num_shapes), sizeof(num_shapes));
-
-                for (auto& shape : icon_layer.Shapes) {
-                    out.write(reinterpret_cast<char*>(&shape.r), sizeof(shape.r));
-                    out.write(reinterpret_cast<char*>(&shape.g), sizeof(shape.g));
-                    out.write(reinterpret_cast<char*>(&shape.b), sizeof(shape.b));
-                    out.write(reinterpret_cast<char*>(&shape.a), sizeof(shape.a));
-
-                    int32_t num_points = shape.GetSize();
-                    out.write(reinterpret_cast<char*>(&num_points), sizeof(num_points));
-
-                    for (int i = 0; i < num_points; ++i) {
-                        out.write(reinterpret_cast<char*>(&shape.point_array[i].x), sizeof(shape.point_array[i].x));
-                        out.write(reinterpret_cast<char*>(&shape.point_array[i].y), sizeof(shape.point_array[i].y));
-                    }
-                }
-            }
-
-            std::cout << "Debug::World saved successfully to " << filename << std::endl;
-            out.close();
-
-            if(cloud) {
-                std::string command = "AWSupload.exe " + filename;
-                int AWSupload_exitcode = std::system(command.c_str());
-                if (AWSupload_exitcode == 0) {
-                    std::cout << "AWSupload completed successfully: " << AWSupload_exitcode << std::endl;
-                } else {
-                    std::cout << "AWSupload failed to upload: " << AWSupload_exitcode << std::endl;
-                }
-            }
-        }
-
-        void discover_icons() {
-            std::regex pattern(R"((\d+)_([a-zA-Z0-9]+)\.(png))");
-
-            for (const auto &entry : std::filesystem::directory_iterator("icons/civilian")) {
-                if (!entry.is_regular_file())
-                    continue;
-
-                std::string filename = entry.path().filename().string();
-                std::smatch matches;
-                
-                if (std::regex_match(filename, matches, pattern)) {
-                    int id = std::stoi(matches[1].str());
-                    std::string name = matches[2].str();
-                    CivilianIdMap[id] = name;
-                }
-            }
-            for (const auto &[id, name] : CivilianIdMap) {
-                std::cout << "Civilian ID: " << id << " => Name: " << name << std::endl;
-            }
-
-            for (const auto &entry : std::filesystem::directory_iterator("icons/military")) {
-                if (!entry.is_regular_file())
-                    continue;
-
-                std::string filename = entry.path().filename().string();
-                std::smatch matches;
-                
-                if (std::regex_match(filename, matches, pattern)) {
-                    int id = std::stoi(matches[1].str());
-                    std::string name = matches[2].str();
-                    MilitaryIdMap[id] = name;
-                }
-            }
-            for (const auto &[id, name] : MilitaryIdMap) {
-                std::cout << "Military ID: " << id << " => Name: " << name << std::endl;
-            }
-
-            for (const auto &entry : std::filesystem::directory_iterator("icons/markers")) {
-                if (!entry.is_regular_file())
-                    continue;
-
-                std::string filename = entry.path().filename().string();
-                std::smatch matches;
-                
-                if (std::regex_match(filename, matches, pattern)) {
-                    int id = std::stoi(matches[1].str());
-                    std::string name = matches[2].str();
-                    MarkerIdMap[id] = name;
-                }
-            }
-            for (const auto &[id, name] : MarkerIdMap) {
-                std::cout << "Marker ID: " << id << " => Name: " << name << std::endl;
-            }
-
-            for (const auto &entry : std::filesystem::directory_iterator("icons/decorator")) {
-                if (!entry.is_regular_file())
-                    continue;
-
-                std::string filename = entry.path().filename().string();
-                std::smatch matches;
-                
-                if (std::regex_match(filename, matches, pattern)) {
-                    int id = std::stoi(matches[1].str());
-                    std::string name = matches[2].str();
-                    DecoratorIdMap[id] = name;
-                }
-            }
-            for (const auto &[id, name] : DecoratorIdMap) {
-                std::cout << "Decorator ID: " << id << " => Name: " << name << std::endl;
-            }
-        }
-
-        void discover_ids() {
-            for (const auto &entry : std::filesystem::directory_iterator("ids")) {
-                if (!entry.is_regular_file())
-                    continue;
-
-                std::ifstream file(entry.path());
-                if (!file.is_open()) {
-                    std::cerr<<"Debug::OpenFile::Error::"<<entry.path().filename().string()<<std::endl;
-                    continue;
-                }
-
-                std::string line;
-                IDmap temporary_map;
-                bool inSection = false;
-
-                while (std::getline(file, line)) {
-                    if (line.rfind("...", 0) == 0) {
-                        if (line == "...;") {
-                            if (inSection) {
-                                temporary_map.buildFastLUT();
-                                IDmaps.push_back(temporary_map);
-                                temporary_map = IDmap();
-                                inSection = false;
-                            }
-                        } else {
-                            temporary_map = IDmap();
-                            temporary_map.name = line.substr(3);
-                            inSection = true;
-                        }
-                        continue;
-                    }
-
-                    if (!inSection)
-                        continue;
-
-                    std::istringstream iss(line);
-                    int id, r, g, b;
-                    std::string text;
-
-                    if (!(iss >> id >> r >> g >> b)) {
-                        std::cerr << "Debug::MalformedLine => " << line << std::endl;
-                        continue;
-                    }
-
-                    std::getline(iss, text);
-                    if (!text.empty() && text[0] == ' ')
-                        text.erase(0, 1);
-
-                    temporary_map.id_map[id] = std::make_tuple(r, g, b, text);
-                }
-
-                if (inSection) {
-                    temporary_map.buildFastLUT();
-                    IDmaps.push_back(temporary_map);
-                }
-
-                file.close();
-            }
-            for (auto& map : IDmaps) {
-                std::cout << "ID Map: " << map.name << std::endl;
-            }
-        }
-
-        WorldLayer& create_worldlayer(SDL_Renderer* renderer, const std::string& name_id, bool is_upper, std::string selected_idmap) {
-            int width, height;
-            if (is_upper) {
-                width = UPPER_WORLD_WIDTH;
-                height = UPPER_WORLD_HEIGHT;
-            } else {
-                width = LOWER_WORLD_WIDTH;
-                height = LOWER_WORLD_HEIGHT;
-            }
-
-            if (width <= 0 || height <= 0) {
-                std::cerr << "Invalid texture size: " << width << " x " << height << std::endl;
-                throw std::runtime_error("Layer not found");
-            }
-
-            SDL_Texture *layer_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-
-            if (!layer_texture) {
-                SDL_Log("Failed to create texture '%s': %s", name_id.c_str(), SDL_GetError());
-                throw std::runtime_error("Layer not found");
-            }
-
-            SDL_SetTextureScaleMode(layer_texture, SDL_SCALEMODE_NEAREST);
-
-            WorldLayer world_layer;
-            world_layer.is_upper = is_upper;
-            if(name_id.length()!=0){
-                world_layer.layer_name = name_id;
-            } else {
-                world_layer.layer_name = last_created_layer_name+"_a";
-            }
-            world_layer.layer_texture = layer_texture;
-            world_layer.idmap_name = selected_idmap;
-
-            WorldLayers.push_back(world_layer);
-            std::cout<<"Debug::Created::WorldLayer::"<<world_layer.layer_name<<std::endl;
-            last_created_layer_name = world_layer.layer_name;
-            return WorldLayers.back();
-        }
-
-        PoliticalLayer& create_politicallayer(SDL_Renderer* renderer, const std::string& name_id, std::string selected_idmap, WorldLayer& linked_world_layer){
-            int width = UPPER_WORLD_WIDTH;
-            int height = UPPER_WORLD_HEIGHT;
-
-            if (width <= 0 || height <= 0) {
-                std::cerr << "Invalid texture size: " << width << " x " << height << std::endl;
-                throw std::runtime_error("Layer not found");
-            }
-
-            SDL_Texture *layer_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-            SDL_Texture *shadow_texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-
-            if (!layer_texture || !shadow_texture) {
-                SDL_Log("Failed to create texture '%s': %s", name_id.c_str(), SDL_GetError());
-                throw std::runtime_error("Layer not found");
-            }
-
-            SDL_SetTextureScaleMode(layer_texture, SDL_SCALEMODE_NEAREST);
-            SDL_SetTextureScaleMode(shadow_texture, SDL_SCALEMODE_NEAREST);
-
-            PoliticalLayer political_layer;
-            political_layer.world_layer = &linked_world_layer;
-            if(name_id.length()!=0){
-                political_layer.layer_name = name_id;
-            } else {
-                political_layer.layer_name = last_created_layer_name+"_a";
-            }
-            political_layer.layer_texture = layer_texture;
-            political_layer.shadow_texture = shadow_texture;
-            political_layer.idmap_name = selected_idmap;
-
-            PoliticalLayers.push_back(political_layer);
-            std::cout<<"Debug::Created::PoliticalLayer::"<<political_layer.layer_name<<std::endl;
-            last_created_layer_name = political_layer.layer_name;
-            return PoliticalLayers.back();
-        }
-
-        IconLayer& create_iconlayer(const std::string& name_id) {
-            IconLayer icon_layer;
-            if(name_id.length()!=0){
-                icon_layer.layer_name = name_id;
-            } else {
-                icon_layer.layer_name = last_created_layer_name+"_a";
-            }
-            IconLayers.push_back(icon_layer);
-            std::cout<<"Debug::Created::IconLayer::"<<icon_layer.layer_name<<std::endl;
-            last_created_layer_name = icon_layer.layer_name;
-            return IconLayers.back();
-        }
-
-        IconLayer& get_iconlayer(const std::string& name_id) {
-            for (auto& layer : IconLayers) {
-                if (layer.layer_name == name_id) {
-                    return layer;
-                }
-            }
-
-            throw std::runtime_error("Layer not found");
-        }
-
-        WorldLayer& get_worldlayer(const std::string& name_id) {
-            for (auto& layer : WorldLayers) {
-                if (layer.layer_name == name_id) {
-                    return layer;
-                }
-            }
-
-            throw std::runtime_error("Layer not found");
-        }
-
-        PoliticalLayer& get_politicallayer(const std::string& name_id) {
-            for (auto& layer : PoliticalLayers) {
-                if (layer.layer_name == name_id) {
-                    return layer;
-                }
-            }
-
-            throw std::runtime_error("Layer not found");
-        }
-
-        void remove_worldlayer(const std::string& name_id) {
-            for (auto it = WorldLayers.begin(); it != WorldLayers.end(); ) {
-                if (it->layer_name == name_id) {
-                    it = WorldLayers.erase(it);
-                    std::cout<<"Debug::Erased::Worldlayer::"<<it->layer_name<<std::endl;
-                } else {
-                    std::cout<<"Debug::CheckingVector::CurrentVectorIterator::"<<it->layer_name<<std::endl;
-                    ++it;
-                }
-            }
-        }
-
-        void remove_iconlayer(const std::string& name_id) {
-            for (auto it = IconLayers.begin(); it != IconLayers.end(); ) {
-                if (it->layer_name == name_id) {
-                    it = IconLayers.erase(it);
-                } else {
-                    ++it;
-                }
-            }
-        }
-
-        int get_layer_type(const std::string& name_id) {
-            for (auto& layer : WorldLayers) {
-                if (layer.layer_name == name_id) {
-                    return 1;
-                }
-            }
-            for (auto& layer : IconLayers) {
-                if (layer.layer_name == name_id) {
-                    return 2;
-                }
-            }
-            for (auto& layer : PoliticalLayers) {
-                if (layer.layer_name == name_id) {
-                    return 3;
-                }
-            }
-            throw std::runtime_error("Layer not found");
-        }
-
-        void set_world_size(int w, int h) {
-            UPPER_WORLD_WIDTH = w;
-            UPPER_WORLD_HEIGHT = h;
-            std::cout<<"Set world to "<<w<<" "<<h<<std::endl;
-        }
-
-        std::tuple<int, int> get_world_size(bool is_upper) {
-            if (is_upper) {
-                if (UPPER_WORLD_WIDTH > 0 && UPPER_WORLD_HEIGHT > 0) {
-                    return {UPPER_WORLD_WIDTH, UPPER_WORLD_HEIGHT};
-                } else {
-                    printf("World doesn't have defined size yet.\n");
-                    return {0, 0}; // default
-                }
-            } else {
-                if (UPPER_WORLD_WIDTH > 0 && UPPER_WORLD_HEIGHT > 0 && CHUNK_WIDTH > 0 && CHUNK_HEIGHT > 0) {
-                    return {UPPER_WORLD_WIDTH * CHUNK_WIDTH, UPPER_WORLD_HEIGHT * CHUNK_HEIGHT};
-                } else {
-                    printf("World doesn't have defined size or chunk size yet.\n");
-                    return {0, 0}; // default
-                }
-            }
-        }
-
-        void set_chunk_size(int w, int h) {
-            CHUNK_WIDTH = w;
-            CHUNK_HEIGHT = h;
-
-            LOWER_WORLD_WIDTH = UPPER_WORLD_WIDTH*CHUNK_WIDTH;
-            LOWER_WORLD_HEIGHT = UPPER_WORLD_HEIGHT*CHUNK_HEIGHT;
-            std::cout<<"Set chunks to "<<w<<" "<<h<<" resulting in lower "<<LOWER_WORLD_WIDTH<<" "<<LOWER_WORLD_HEIGHT<<std::endl;
-        }
-
-        std::tuple<int,int> get_chunk_size() {
-            if(CHUNK_WIDTH>0 && CHUNK_HEIGHT>0){
-                std::tuple<int, int> chunk_size(CHUNK_WIDTH, CHUNK_HEIGHT);
-                return chunk_size;
-            } else {
-                printf("World doesn't have defined chunk size yet.");
-                return {0, 0}; // Default/fallback
-            }
-        }
-
-        void draw_all(SDL_Renderer* renderer, SDL_FRect* input_viewport_lower, SDL_FRect* input_viewport_upper, SDL_FRect* output_viewport, float scale_offset, float pan_offset_x, float pan_offset_y) {
-            for (auto& layer : WorldLayers) {
-                SDL_Texture* texture = layer.layer_texture;
-
-                if(layer.visible){
-                    if(layer.is_upper){
-                        SDL_RenderTexture(renderer, texture, input_viewport_upper, output_viewport);
-                    } else {
-                        SDL_RenderTexture(renderer, texture, input_viewport_lower, output_viewport);
-                    }
-                }
-            };
-            for (auto& layer : PoliticalLayers) {
-                SDL_Texture* texture = layer.layer_texture;
-                SDL_Texture* shadow_texture = layer.shadow_texture;
-
-                if(layer.visible){
-                    SDL_RenderTexture(renderer, texture, input_viewport_upper, output_viewport);
-                    SDL_RenderTexture(renderer, shadow_texture, input_viewport_upper, output_viewport);
-                }
-            };
-            for (auto& icon_layer : IconLayers) {
-                const std::string& name = icon_layer.layer_name;
-                Uint8 r_, g_, b_, a_;
-
-                if(icon_layer.visible){
-                    for (auto& shape : icon_layer.Shapes) {
-                        const SDL_FPoint* points = shape.GetPoints();
-                        const int size_of_array = shape.GetSize();
-
-                        std::vector<SDL_FPoint> screen_points(size_of_array);
-                        for (int i = 0; i < size_of_array; ++i) {
-                            screen_points[i].x = (points[i].x - pan_offset_x) * scale_offset;
-                            screen_points[i].y = (points[i].y - pan_offset_y) * scale_offset;
-                        }
-
-                        SDL_GetRenderDrawColor(renderer, &r_, &g_, &b_, &a_);
-                        // honestly don't know if it's even efficient to do it this way, of saving and re-using the pointers;
-
-                        SDL_SetRenderDrawColor(renderer, shape.r, shape.g, shape.b, shape.a);
-
-                        if (SDL_RenderLines(renderer, screen_points.data(), size_of_array) < 0) {
-                            std::cerr << "Debug::RenderLines::Error::" << SDL_GetError() << std::endl;
-                        }
-
-                        SDL_SetRenderDrawColor(renderer, r_, g_, b_, a_);
-                    }
-
-                    for (auto& icon : icon_layer.IconsCivilian) {
-                        icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
-                        // if (icon.GetPosition().x == selected_world_icon->GetPosition().x && icon.GetPosition().y == selected_world_icon->GetPosition().y) {
-
-                        // }
-                    }
-                    for (auto& icon : icon_layer.IconsMilitary) {
-                        icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
-                    }
-                };
             };
         };
     };
+};
+
+static void HelpMarker(const char* desc)
+{
+    ImGui::TextDisabled("(?)");
+    if (ImGui::BeginItemTooltip())
+    {
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 35.0f);
+        ImGui::TextUnformatted(desc);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
 
 int main(int argc, char* args[]) {
-    std::cout<<"Initializing AWS, it'll take a second..."<<std::endl;
-    std::string command = "AWSlistbucket.exe";
-    int AWSlistbucket_exitcode = std::system(command.c_str());
-    if (AWSlistbucket_exitcode == 0) {
-        std::cout << "AWSlistbucket completed successfully: " << AWSlistbucket_exitcode << std::endl;
+    std::ofstream saves_cache("AWSshared", std::ios::trunc);
+    if(std::filesystem::exists("server_keys.json")) {
+        std::cout<<"Initializing AWS, it'll take a second..."<<std::endl;
+        std::string command = "AWSlistbucket.exe";
+        int AWSlistbucket_exitcode = std::system(command.c_str());
+        if (AWSlistbucket_exitcode == 0) {
+            std::cout << "AWSlistbucket completed successfully: " << AWSlistbucket_exitcode << std::endl;
+        } else {
+            std::cout << "AWSlistbucket failed with exit code: " << AWSlistbucket_exitcode << std::endl;
+        }
     } else {
-        std::cout << "AWSlistbucket failed with exit code: " << AWSlistbucket_exitcode << std::endl;
+        std::cout<<"No AWS credentials found, skipping AWS initialization."<<std::endl;
     }
 
     // Initialize SDL
@@ -1463,7 +1512,7 @@ int main(int argc, char* args[]) {
     }
 
     // Create a window 
-    SDL_Window* window = SDL_CreateWindow("NATIONWIDER C++", SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_RESIZABLE);
+    SDL_Window* window = SDL_CreateWindow("Nationwider C++", SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_RESIZABLE);
     if (!window) {
         SDL_Log("Window could not be created! SDL_Error: %s\n", SDL_GetError());
         SDL_Quit();
@@ -1551,9 +1600,7 @@ int main(int argc, char* args[]) {
         style.Colors[ImGuiCol_TextSelectedBg]        = ImVec4(0.40f, 0.40f, 0.40f, 1.00f);
         style.Colors[ImGuiCol_PopupBg]               = ImVec4(0.20f, 0.20f, 0.20f, 0.90f);
     }
-    // ---
 
-    // Setup scaling
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScaleAllSizes(main_scale);
     style.FontScaleDpi = main_scale;
@@ -1562,7 +1609,7 @@ int main(int argc, char* args[]) {
     ImGui_ImplSDLRenderer3_Init(renderer);
     // ---
 
-    // constants for navigation
+    // Constants for navigation
     std::string selected_layer;
     std::string selected_linetool;
     std::string selected_idmap;
@@ -1570,16 +1617,16 @@ int main(int argc, char* args[]) {
     Shape temporary_shape;
     SDL_FPoint last_clicked_position = {0, 0};
     bool pressed_first_line = false;
-    int selected_decorator_id;
+    int selected_decorator_id=-1;
     bool moving_icon = false;
     bool rotating_icon = false;
     bool editing_map = false;
     int brush_tool = 0;
-    int selected_icon_id;
-    int selected_icon_class;
+    int selected_icon_id=-1;
+    int selected_icon_class=-1;
     int selected_country_id = 0;
     int selected_tile_id = 0;
-    float size_offset = 1.0f;
+    float zoom_offset = 1.0f;
     float pan_offset_x = 0.0f;
     float pan_offset_y = 0.0f;
     bool popup = false;
@@ -1617,8 +1664,8 @@ int main(int argc, char* args[]) {
             SDL_GetMouseState(&mouse_screenX, &mouse_screenY);
             // <float> mouse coordinates in world space
             float mouse_worldX, mouse_worldY;
-            mouse_worldX = static_cast<float>((mouse_screenX / size_offset) + pan_offset_x);
-            mouse_worldY = static_cast<float>((mouse_screenY / size_offset) + pan_offset_y);
+            mouse_worldX = static_cast<float>((mouse_screenX / zoom_offset) + pan_offset_x);
+            mouse_worldY = static_cast<float>((mouse_screenY / zoom_offset) + pan_offset_y);
 
             int textureX = static_cast<int>(std::floor(mouse_worldX));
             int textureY = static_cast<int>(std::floor(mouse_worldY));
@@ -1860,9 +1907,12 @@ int main(int argc, char* args[]) {
                         }
                     }
 
+                    popup = !popup;
+                }
+
+                if (e.button.button == SDL_BUTTON_MIDDLE) {
                     selected_icon_id = 0;
                     selected_decorator_id = 0;
-                    popup = !popup;
                     dragging = true;
                     lastMouseX = e.button.x;
                     lastMouseY = e.button.y;
@@ -1988,8 +2038,8 @@ int main(int argc, char* args[]) {
                 if (dragging) {
                     int dx = e.motion.x - lastMouseX;
                     int dy = e.motion.y - lastMouseY;
-                    pan_offset_x -= dx / size_offset;
-                    pan_offset_y -= dy / size_offset;
+                    pan_offset_x -= dx / zoom_offset;
+                    pan_offset_y -= dy / zoom_offset;
                     lastMouseX = e.motion.x;
                     lastMouseY = e.motion.y;
                 }
@@ -1997,9 +2047,11 @@ int main(int argc, char* args[]) {
 
             // Handle mouse button up events
             if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-                if (e.button.button == SDL_BUTTON_RIGHT) {
+                // if (e.button.button == SDL_BUTTON_RIGHT) {
+                //     popup = false;
+                // }
+                if (e.button.button == SDL_BUTTON_MIDDLE) {
                     dragging = false;
-                    popup = false;
                 }
             }
 
@@ -2014,19 +2066,19 @@ int main(int argc, char* args[]) {
 
                 if(rotating_icon==false){
                     if (e.wheel.y > 0) {
-                        size_offset += 0.1 * size_offset; // Zoom in
+                        zoom_offset += 0.1 * zoom_offset; // Zoom in
                     } else if (e.wheel.y < 0) {
-                        size_offset -= 0.1 * size_offset; // Zoom out
+                        zoom_offset -= 0.1 * zoom_offset; // Zoom out
                     }
                 }
-                // Clamp size_offset
-                size_offset = std::max(size_offset, 0.1f);
+                // Clamp zoom_offset
+                zoom_offset = std::max(zoom_offset, 0.1f);
 
                 float afterzoom_screenX, afterzoom_screenY;
                 SDL_GetMouseState(&afterzoom_screenX, &afterzoom_screenY);
                 float afterzoom_worldX, afterzoom_worldY;
-                afterzoom_worldX = static_cast<float>((afterzoom_screenX / size_offset) + pan_offset_x);
-                afterzoom_worldY = static_cast<float>((afterzoom_screenY / size_offset) + pan_offset_y);
+                afterzoom_worldX = static_cast<float>((afterzoom_screenX / zoom_offset) + pan_offset_x);
+                afterzoom_worldY = static_cast<float>((afterzoom_screenY / zoom_offset) + pan_offset_y);
 
                 pan_offset_x += (mouse_worldX - afterzoom_worldX);
                 pan_offset_y += (mouse_worldY - afterzoom_worldY);
@@ -2040,7 +2092,7 @@ int main(int argc, char* args[]) {
                 current_window_height = h;
                 viewport_output.w = w;
                 viewport_output.h = h;
-                printf("Window resized to %d x %d\n", viewport_output.w, viewport_output.h);
+                printf("Window resized to %d x %d\n", int(viewport_output.w), int(viewport_output.h));
             }
         }
 
@@ -2103,315 +2155,6 @@ int main(int argc, char* args[]) {
                     if(discovered_worlds.empty()){
                         ImGui::TextColored(error_color, "No savefiles found in current directory.");
                     } else {
-                        if(ImGui::Button("convert from old")){
-                            std::ifstream in("a_grid.txt", std::ios::binary);
-                            world.set_world_size(600, 300);
-                            world.set_chunk_size(20, 20);
-                            auto [world_width_lower_intermitent, world_height_lower_intermitent] = world.get_world_size(false);
-                            auto [world_width_upper_intermitent, world_height_upper_intermitent] = world.get_world_size(true);
-                            auto [chunk_width_intermitent, chunk_height_intermitent] = world.get_chunk_size();
-                            world_width_lower = world_width_lower_intermitent;
-                            world_height_lower = world_height_lower_intermitent;
-                            world_width_upper = world_width_upper_intermitent;
-                            world_height_upper = world_height_upper_intermitent;
-                            chunk_width = chunk_width_intermitent;
-                            chunk_height = chunk_height_intermitent;
-                            texture_rect.w = world_width_lower;
-                            texture_rect.h = world_height_lower;
-                        
-                            WorldLayer loaded_layer = world.create_worldlayer(renderer, "biome_layer", true, "galaina-tiles");
-                            IDmap* referenced_id_map = nullptr;
-                            for (auto& id_map : world.IDmaps) {
-                                if (id_map.name == "galaina-tiles") {
-                                    referenced_id_map = &id_map;
-                                    break;
-                                }
-                            }
-                            if (!referenced_id_map) {
-                                std::cerr << "IDmap not found: " << "galaina-tiles" << "\n";
-                                continue;
-                            }
-
-                            void* texPixels;
-                            int pitch;
-                            if (SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch) < 0) {
-                                std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
-                                continue;
-                            }
-
-                            Uint32* texStart = reinterpret_cast<Uint32*>(texPixels);
-                            int width = 600;
-                            int height = 300;
-                            std::vector<uint8_t> rowBuf(width);
-
-                            for (int y = 0; y < height; y++) {
-                                in.read(reinterpret_cast<char*>(rowBuf.data()), width);
-
-                                Uint32* rowOut = reinterpret_cast<Uint32*>(
-                                    reinterpret_cast<uint8_t*>(texStart) + (height - 1 - y) * pitch
-                                );
-
-                                for (int x = 0; x < width; x++) {
-                                    uint8_t idx = rowBuf[x];
-                                    rowOut[x] = referenced_id_map->px_LUT[idx];
-                                }
-                            }
-
-                            SDL_UnlockTexture(loaded_layer.layer_texture);
-                            in.close();
-
-                            std::ifstream in_b("b_grid.txt", std::ios::binary);
-                            PoliticalLayer loaded_layer_political = world.create_politicallayer(renderer, "political_layer", "galaina-nations", loaded_layer);
-                            loaded_layer_political.update_texture(world.IDmaps);
-                            IDmap* referenced_id_map_b = nullptr;
-                            for (auto& id_map : world.IDmaps) {
-                                if (id_map.name == "galaina-nations") {
-                                    referenced_id_map_b = &id_map;
-                                    break;
-                                }
-                            }
-                            if (!referenced_id_map_b) {
-                                std::cerr << "IDmap not found: " << "galaina-nations" << "\n";
-                                continue;
-                            }
-
-                            void* texPixels_b;
-                            int pitch_b;
-                            if (SDL_LockTexture(loaded_layer_political.layer_texture, nullptr, &texPixels_b, &pitch_b) < 0) {
-                                std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
-                                continue;
-                            }
-
-                            Uint32* texStart_b = reinterpret_cast<Uint32*>(texPixels_b);
-                            std::vector<uint8_t> rowBuf_b(width);
-
-                            for (int y = 0; y < height; y++) {
-                                in_b.read(reinterpret_cast<char*>(rowBuf_b.data()), width);
-
-                                Uint32* rowOut = reinterpret_cast<Uint32*>(
-                                    reinterpret_cast<uint8_t*>(texStart_b) + (height - 1 - y) * pitch_b
-                                );
-
-                                for (int x = 0; x < width; x++) {
-                                    uint8_t idx = rowBuf_b[x];
-                                    rowOut[x] = referenced_id_map_b->px_LUT[idx];
-                                }
-                            }
-                            
-                            SDL_UnlockTexture(loaded_layer_political.layer_texture);
-                            in_b.close();
-
-                            std::ifstream in_d("c_grid.txt", std::ios::binary);
-                            WorldLayer loaded_layer_lower = world.create_worldlayer(renderer, "biome_highres", false, "galaina-tiles");
-                            IDmap* referenced_id_map_d = nullptr;
-                            for (auto& id_map : world.IDmaps) {
-                                if (id_map.name == "galaina-tiles") {
-                                    referenced_id_map_d = &id_map;
-                                    break;
-                                }
-                            }
-                            if (!referenced_id_map_d) {
-                                std::cerr << "IDmap not found: " << "galaina-tiles" << "\n";
-                                continue;
-                            }
-
-                            void* texPixels_d;
-                            int pitch_d;
-                            if (SDL_LockTexture(loaded_layer_lower.layer_texture, nullptr, &texPixels_d, &pitch_d) < 0) {
-                                std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
-                                continue;
-                            }
-
-                            Uint32* texStart_d = reinterpret_cast<Uint32*>(texPixels_d);
-                            std::vector<uint8_t> rowBuf_d(12000);
-
-                            for (int y = 0; y < 6000; y++) {
-                                in_d.read(reinterpret_cast<char*>(rowBuf_d.data()), 12000);
-
-                                Uint32* rowOut = reinterpret_cast<Uint32*>(
-                                    reinterpret_cast<uint8_t*>(texStart_d) + (6000 - 1 - y) * pitch_d
-                                );
-
-                                for (int x = 0; x < 12000; x++) {
-                                    uint8_t idx = rowBuf_d[x];
-                                    rowOut[x] = referenced_id_map_d->px_LUT[idx];
-                                }
-                            }
-
-                            SDL_UnlockTexture(loaded_layer_lower.layer_texture);
-                            in_d.close();
-
-                            std::ifstream in_c("d_grid.txt", std::ios::binary);
-                            WorldLayer loaded_layer_climate = world.create_worldlayer(renderer, "climate_layer", true, "galaina-climate");
-                            IDmap* referenced_id_map_c = nullptr;
-                            for (auto& id_map : world.IDmaps) {
-                                if (id_map.name == "galaina-climate") {
-                                    referenced_id_map_c = &id_map;
-                                    break;
-                                }
-                            }
-                            if (!referenced_id_map_c) {
-                                std::cerr << "IDmap not found: " << "galaina-climate" << "\n";
-                                continue;
-                            }
-
-                            void* texPixels_c;
-                            int pitch_c;
-                            if (SDL_LockTexture(loaded_layer_climate.layer_texture, nullptr, &texPixels_c, &pitch_c) < 0) {
-                                std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
-                                continue;
-                            }
-
-                            Uint32* texStart_c = reinterpret_cast<Uint32*>(texPixels_c);
-                            std::vector<uint8_t> rowBuf_c(width);
-
-                            for (int y = 0; y < height; y++) {
-                                in_c.read(reinterpret_cast<char*>(rowBuf_c.data()), width);
-
-                                Uint32* rowOut = reinterpret_cast<Uint32*>(
-                                    reinterpret_cast<uint8_t*>(texStart_c) + (height - 1 - y) * pitch_c
-                                );
-
-                                for (int x = 0; x < width; x++) {
-                                    uint8_t idx = rowBuf_c[x];
-                                    rowOut[x] = referenced_id_map_c->px_LUT[idx];
-                                }
-                            }
-
-                            SDL_UnlockTexture(loaded_layer_climate.layer_texture);
-                            in_c.close();
-
-
-                            {
-                            IconLayer& civilian_icon_layer = world.create_iconlayer("civilian_icons");
-
-                            std::ifstream file("civilian_icons.txt");
-                            if (!file.is_open())
-                            {
-                                std::cerr << "Failed to open civilian_icons.txt\n";
-                                continue;
-                            }
-
-                            float x_, y_;
-                            int icon_id_, unique_id;
-
-                            while (file >> x_ >> y_ >> icon_id_ >> unique_id)
-                            {
-                                civilian_icon_layer.create_civilian_icon(
-                                    renderer,
-                                    icon_id_+1,
-                                    x_,
-                                    6000-y_,
-                                    world.CivilianIdMap
-                                );
-                            }
-
-                            }
-
-                            {
-
-                            IconLayer& military_icon_layer = world.create_iconlayer("military_icons");
-
-                            std::ifstream file("military_icons.txt");
-                            if (!file.is_open())
-                            {
-                                std::cerr << "Failed to open military_icons.txt\n";
-                                continue;
-                            }
-
-                            float x_, y_, rotation;
-                            int icon_id_, unique_id, country_id, quality_id;
-
-                            while (file >> x_ >> y_ >> icon_id_ >> unique_id >> country_id >> quality_id)
-                            {
-                                switch (icon_id_)
-                                {
-                                    case 0:
-                                        icon_id_ = 1;
-                                        break; 
-                                    case 1:
-                                        icon_id_ = 2;
-                                        break; 
-                                    case 2:
-                                        icon_id_ = 3;
-                                        break; 
-                                    case 3:
-                                        icon_id_ = 4;
-                                        break; 
-                                    case 4:
-                                        icon_id_ = 23;
-                                        break;
-                                    case 5:
-                                        icon_id_ = 17; 
-                                        break;
-                                    case 6:
-                                        icon_id_ = 22; 
-                                        break;
-                                    case 7:
-                                        icon_id_ = 15;
-                                        break;
-                                    case 8:
-                                        icon_id_ = 18;
-                                        break;
-                                    case 9:
-                                        icon_id_ = 21;
-                                        break;
-                                    case 10:
-                                        icon_id_ = 19; 
-                                        break;
-                                    case 11:
-                                        icon_id_ = 14; 
-                                        break;
-                                    case 12:
-                                        icon_id_ = 20;
-                                        break;
-                                    case 13:
-                                        icon_id_ = 16;
-                                        break;
-                                    case 14:
-                                        icon_id_ = 5;
-                                        break;
-                                    case 15:
-                                        icon_id_ = 6;
-                                        break;
-                                    case 16:
-                                        icon_id_ = 7;
-                                        break;
-                                    case 17:
-                                        icon_id_ = 8;
-                                        break;
-                                    case 18:
-                                        icon_id_ = 9;
-                                        break;
-                                    case 19:
-                                        icon_id_ = 10;
-                                        break;
-                                    case 20:
-                                        icon_id_ = 11;
-                                        break;
-                                    case 21:
-                                        icon_id_ = 12;
-                                        break;
-                                    case 22:
-                                        icon_id_ = 13;
-                                        break;
-                                    default:
-                                        break;
-                                }
-                                IconMilitary& returned_icon = military_icon_layer.create_military_icon(
-                                    renderer,
-                                    icon_id_,
-                                    x_,
-                                    6000-y_,
-                                    world.MilitaryIdMap
-                                );
-
-                                returned_icon.angle = rotation;
-                            }
-
-                            }
-                        }
-
                         for (const auto& filename : discovered_worlds) {
                             std::string button_filename = "local / " + filename;
                             if(ImGui::Button(button_filename.c_str())){
@@ -2490,7 +2233,7 @@ int main(int argc, char* args[]) {
 
                                     void* texPixels;
                                     int pitch;
-                                    if (SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch) < 0) {
+                                    if (!SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch)) {
                                         std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
                                         continue;
                                     }
@@ -2556,7 +2299,7 @@ int main(int argc, char* args[]) {
 
                                     void* texPixels;
                                     int pitch;
-                                    if (SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch) < 0) {
+                                    if (!SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch)) {
                                         std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
                                         continue;
                                     }
@@ -2596,8 +2339,14 @@ int main(int argc, char* args[]) {
                                         in.read(reinterpret_cast<char*>(&icon_id), sizeof(icon_id));
                                         in.read(reinterpret_cast<char*>(&pos_x), sizeof(pos_x));
                                         in.read(reinterpret_cast<char*>(&pos_y), sizeof(pos_y));
+
+                                        std::uint64_t description_size;
+                                        in.read(reinterpret_cast<char*>(&description_size), sizeof(description_size));
+
+                                        std::string description(description_size, '\0');
+                                        in.read(description.data(), description_size);
                                         
-                                        icon_layer.create_civilian_icon(renderer, icon_id, pos_x, pos_y, world.CivilianIdMap);
+                                        icon_layer.create_civilian_icon(renderer, icon_id, pos_x, pos_y, world.CivilianIdMap, description);
                                     }
 
                                     in.read(reinterpret_cast<char*>(&num_military_icons), sizeof(num_military_icons));
@@ -2611,7 +2360,13 @@ int main(int argc, char* args[]) {
                                         in.read(reinterpret_cast<char*>(&pos_x), sizeof(pos_x));
                                         in.read(reinterpret_cast<char*>(&pos_y), sizeof(pos_y));
 
-                                        icon_layer.create_military_icon(renderer, icon_id, pos_x, pos_y, world.MilitaryIdMap);
+                                        std::uint64_t description_size;
+                                        in.read(reinterpret_cast<char*>(&description_size), sizeof(description_size));
+
+                                        std::string description(description_size, '\0');
+                                        in.read(description.data(), description_size);
+
+                                        icon_layer.create_military_icon(renderer, icon_id, pos_x, pos_y, world.MilitaryIdMap, description);
                                         auto& created_icon = icon_layer.IconsMilitary.back();
                                         created_icon.angle = angle;
 
@@ -2737,7 +2492,7 @@ int main(int argc, char* args[]) {
 
                                         void* texPixels;
                                         int pitch;
-                                        if (SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch) < 0) {
+                                        if (!SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch)) {
                                             std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
                                             continue;
                                         }
@@ -2803,7 +2558,7 @@ int main(int argc, char* args[]) {
 
                                         void* texPixels;
                                         int pitch;
-                                        if (SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch) < 0) {
+                                        if (!SDL_LockTexture(loaded_layer.layer_texture, nullptr, &texPixels, &pitch)) {
                                             std::cerr << "Failed to lock texture: " << SDL_GetError() << "\n";
                                             continue;
                                         }
@@ -2843,8 +2598,14 @@ int main(int argc, char* args[]) {
                                             in.read(reinterpret_cast<char*>(&icon_id), sizeof(icon_id));
                                             in.read(reinterpret_cast<char*>(&pos_x), sizeof(pos_x));
                                             in.read(reinterpret_cast<char*>(&pos_y), sizeof(pos_y));
+
+                                            std::uint64_t description_size;
+                                            in.read(reinterpret_cast<char*>(&description_size), sizeof(description_size));
+
+                                            std::string description(description_size, '\0');
+                                            in.read(description.data(), description_size);
                                             
-                                            icon_layer.create_civilian_icon(renderer, icon_id, pos_x, pos_y, world.CivilianIdMap);
+                                            icon_layer.create_civilian_icon(renderer, icon_id, pos_x, pos_y, world.CivilianIdMap, description);
                                         }
 
                                         in.read(reinterpret_cast<char*>(&num_military_icons), sizeof(num_military_icons));
@@ -2858,7 +2619,13 @@ int main(int argc, char* args[]) {
                                             in.read(reinterpret_cast<char*>(&pos_x), sizeof(pos_x));
                                             in.read(reinterpret_cast<char*>(&pos_y), sizeof(pos_y));
 
-                                            icon_layer.create_military_icon(renderer, icon_id, pos_x, pos_y, world.MilitaryIdMap);
+                                            std::uint64_t description_size;
+                                            in.read(reinterpret_cast<char*>(&description_size), sizeof(description_size));
+
+                                            std::string description(description_size, '\0');
+                                            in.read(description.data(), description_size);
+                                            
+                                            icon_layer.create_military_icon(renderer, icon_id, pos_x, pos_y, world.MilitaryIdMap, description);
                                             auto& created_icon = icon_layer.IconsMilitary.back();
                                             created_icon.angle = angle;
 
@@ -2928,36 +2695,89 @@ int main(int argc, char* args[]) {
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World editing");
 
-                ImGui::InputText("layer name##01",buffer,sizeof(buffer));
+                if(ImGui::Button("Create Layer")){
+                    ImGui::OpenPopup("CreateLayerModal");
+                }
 
-                if(ENABLE_TIPS==true){
-                    ImGui::TextColored(info_color, "Note: Layers can be Upper or Lower,\nUpper layers are lower resolution and bigger\nLower layers are higher resolution and smaller,\nso we use lower layers for higher detail\nand we use upper layers for the bigger picture.");
-                }
-                if(ImGui::Button("toggle##02")){
-                    upper = !upper;
-                }
-                ImGui::SameLine();
-                ImGui::Text(upper ? "Upper" : "Lower");
+                ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+                ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
 
-                if(ENABLE_TIPS==true){
-                    ImGui::TextColored(info_color, "Note: You can choose to create either\nan icon layer or a world layer.");
-                }
-                if(ImGui::Button("toggle##03")){
-                    layer_type = !layer_type;
-                }
-                ImGui::SameLine();
-                ImGui::Text(layer_type ? "Icon" : "World");
+                if (ImGui::BeginPopupModal("CreateLayerModal", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+                {   
+                    ImGui::BeginGroup(); // G#01
 
-                if(ImGui::Button("CREATE layer##04")){
-                    if(layer_type){
-                        world.create_iconlayer(buffer);
-                    } else {
-                        if(selected_idmap.empty()){
-                            std::cout<<"Debug::NoIDmapSelected::CannotCreateWorldLayer"<<std::endl;
-                        } else {
-                            world.create_worldlayer(renderer,buffer,upper,selected_idmap);
+                    ImGui::BeginGroup(); // G#02
+                    ImGui::InputText("layer name##01", buffer,sizeof(buffer));
+
+                    if(ImGui::Button("Toggle##02")){
+                        layer_type = !layer_type;
+                    }
+                    ImGui::SameLine();
+                    ImGui::Text(layer_type ? "Icon Layer" : "Terrain Layer");
+                    if(ENABLE_TIPS==true){
+                        ImGui::TextColored(info_color, "You can choose to create either\nan icon layer or a terrain layer.");
+                    }
+
+                    if(layer_type == false){
+                        if(ImGui::Button("Toggle##03")){
+                            upper = !upper;
+                        }
+                        ImGui::SameLine();
+                        ImGui::Text(upper ? "Upper" : "Lower");
+
+                        if(ENABLE_TIPS==true){
+                            ImGui::TextColored(info_color, "Layers can be Upper or Lower,\nUpper layers are lower resolution and bigger\nLower layers are higher resolution and smaller,\nTLDR: We use lower layers for higher detail\nand we use upper layers for the bigger picture.");
                         }
                     }
+
+                    ImGui::Separator();
+                    if(!selected_idmap.empty()){
+                        if(ImGui::Button("Create"))
+                        {
+                            if(layer_type){
+                                world.create_iconlayer(buffer);
+                            } else {
+                                if(selected_idmap.empty()){
+                                    std::cout<<"Debug::NoIDmapSelected::CannotCreateWorldLayer"<<std::endl;
+                                } else {
+                                    world.create_worldlayer(renderer,buffer,upper,selected_idmap);
+                                }
+                            }
+                        ImGui::CloseCurrentPopup();
+                        }
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Close")) {
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndGroup(); // G#02
+                    ImGui::SameLine();
+
+                    ImGui::BeginGroup(); // G#03
+                    
+                    if(selected_idmap.empty())
+                    {
+                        ImGui::TextWrapped("You need to have an ID map selected to create a terrain layer, please select one from below.");
+                        ImGui::Spacing();
+                    }
+
+                    if (ImGui::BeginListBox("##IDmapList")) 
+                    {
+                        for (const auto& idmap : world.IDmaps) {
+                            if (ImGui::Selectable(idmap.name.c_str(), selected_idmap == idmap.name)) {
+                                selected_idmap = idmap.name;
+                                std::cout << "Debug::SelectedIDmap::" << selected_idmap << std::endl;
+                            }
+                        }
+                    ImGui::EndListBox();
+                    }
+
+                    ImGui::EndGroup(); // G#03
+
+                    ImGui::EndGroup(); // G#01
+                ImGui::EndPopup();
                 }
 
                 int selected_layer_type;
@@ -2969,29 +2789,83 @@ int main(int argc, char* args[]) {
                     if(selected_layer_type==1){
                         ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Selected layer: %s (World layer)", selected_layer.c_str());
 
-                        if(ImGui::Button("ATTACH political layer##05")){
-                            if(selected_idmap.empty()){
-                                std::cout<<"Debug::NoIDmapSelected::CannotCreatePoliticalLayer"<<std::endl;
-                            } else {
-                                WorldLayer& referenced_layer = world.get_worldlayer(selected_layer);
-                                PoliticalLayer& returned_layer = world.create_politicallayer(renderer,buffer,selected_idmap,referenced_layer);
-                                returned_layer.bake_texture(world.IDmaps);
-                                returned_layer.update_texture(world.IDmaps);
+                        for (const auto& layer : world.GetWorldLayers()) {
+                            if (layer.layer_name == selected_layer) {
+                                if(layer.is_upper == true)
+                                {
+                                    if(ImGui::Button("Attach Political layer##09"))
+                                    {
+                                        ImGui::OpenPopup("CreatePoliticalLayerModal");
+                                    }
+                                }
+                                break;
                             }
                         }
-                    } else if(selected_layer_type==2) {
+                    }
+                    if(selected_layer_type==2){
                         ImGui::TextColored(ImVec4(0.3f, 1.0f, 1.0f, 1.0f), "Selected layer: %s (Icon layer)", selected_layer.c_str());
-                    } else if(selected_layer_type==3) {
+                    }
+                    if(selected_layer_type==3){
                         ImGui::TextColored(ImVec4(0.6f, 0.3f, 8.0f, 1.0f), "Selected layer: %s (Political layer)", selected_layer.c_str());
                     }
                 }
 
+                ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+                if (ImGui::BeginPopupModal("CreatePoliticalLayerModal", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+                {   
+                    ImGui::BeginGroup(); // G#01
+
+                    ImGui::BeginGroup(); // G#02
+                    ImGui::InputText("layer name##01",buffer,sizeof(buffer));
+
+                    if(ImGui::Button("Create")){
+                        if(selected_idmap.empty()){
+                            std::cout<<"Debug::NoIDmapSelected::CannotCreatePoliticalLayer"<<std::endl;
+                        } else {
+                            WorldLayer& referenced_layer = world.get_worldlayer(selected_layer);
+                            PoliticalLayer& returned_layer = world.create_politicallayer(renderer,buffer,selected_idmap,referenced_layer);
+                            returned_layer.bake_texture(world.IDmaps);
+                            returned_layer.update_texture(world.IDmaps);
+                        }
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Close")) {
+                        ImGui::CloseCurrentPopup();
+                    }
+
+                    ImGui::EndGroup(); // G#02
+                    ImGui::SameLine();
+
+                    ImGui::BeginGroup(); // G#03
+                    
+                    if(selected_idmap.empty())
+                    {
+                        ImGui::TextWrapped("You need to have an ID map selected to create a political layer, please select one from below.");
+                        ImGui::Spacing();
+                    }
+
+                    if (ImGui::BeginListBox("##IDmapList")) 
+                    {
+                        for (const auto& idmap : world.IDmaps) {
+                            if (ImGui::Selectable(idmap.name.c_str(), selected_idmap == idmap.name)) {
+                                selected_idmap = idmap.name;
+                                std::cout << "Debug::SelectedIDmap::" << selected_idmap << std::endl;
+                            }
+                        }
+                    ImGui::EndListBox();
+                    }
+
+                    ImGui::EndGroup(); // G#03
+
+                    ImGui::EndGroup(); // G#01
+                ImGui::EndPopup();
+                }
+
                 if (ImGui::TreeNode("Layers")) {
                     if (ImGui::TreeNode("Icon Layers")) {
-                        if(ENABLE_TIPS==true){
-                            ImGui::TextColored(info_color, "Note: Icon layers are rendered from bottom to top,\nthe last layer in the list (the top) is rendered on top.");
-                            ImGui::TextColored(info_color, "Each layer can have military and civilian icons,\nit can also contain lines.");
-                        }
                         const auto& iconLayers = world.GetIconLayers();
                         int total = static_cast<int>(iconLayers.size());
 
@@ -3065,9 +2939,6 @@ int main(int argc, char* args[]) {
                     }
 
                     if (ImGui::TreeNode("World Layers")) {
-                        if(ENABLE_TIPS==true){
-                            ImGui::TextColored(info_color, "Note: World layers are rendered from bottom to top,\nthe last layer in the list (the top) is rendered on top.");
-                        }
                         const auto& layers = world.GetWorldLayers();
                         int total = static_cast<int>(layers.size());
 
@@ -3104,18 +2975,6 @@ int main(int argc, char* args[]) {
 
                     ImGui::TreePop();
                 }
-
-                if(selected_idmap.empty()){
-                    ImGui::TextColored(warning_color, "Warning! No Tile ID/ID map selected, \nyou won't be able to create a new world layer.");
-                    if(ENABLE_TIPS==true){
-                        ImGui::TextColored(info_color, "Select a Tile ID from the dropdown menu,\nlayers get created with the selected ID map,\nso you have to have an ID map selected beforehand.");
-                    }
-                } else {
-                    ImGui::TextColored(info_color, "ID map selected: %s", selected_idmap.c_str());
-                    if(ENABLE_TIPS==true){
-                        ImGui::TextColored(info_color, "This will create a world layer with this ID map attached.\nIf you want to load this save later,\nmake sure you have this ID map in your IDmaps folder.");
-                    }
-                }
             }
 
             if(world.selected_world_icon){
@@ -3125,10 +2984,22 @@ int main(int argc, char* args[]) {
                 bool is_military = dynamic_cast<IconMilitary*>(world.selected_world_icon) != nullptr;
                 ImGui::Text(is_military ? "Military icon selected" : "Civilian icon selected");
 
+                static char description_buffer[1024] = "";
+                if (world.selected_world_icon->GetDescription().empty()) {
+                    description_buffer[0] = '\0';
+                } else {
+                    strncpy(description_buffer, world.selected_world_icon->GetDescription().c_str(), sizeof(description_buffer) - 1);
+                    description_buffer[sizeof(description_buffer) - 1] = '\0';
+                }
+                if (ImGui::InputTextMultiline("Description##01", description_buffer, sizeof(description_buffer))) {
+                    world.selected_world_icon->SetDescription(description_buffer);
+                }
+
                 ImGui::Text("Icon id: %d", world.selected_world_icon->GetIconId());
                 ImGui::Text("Icon position: %f %f", world.selected_world_icon->GetPosition().x, world.selected_world_icon->GetPosition().y);
                 if(is_military){
                     IconMilitary* military_icon = dynamic_cast<IconMilitary*>(world.selected_world_icon);
+
                     ImGui::Text("Icon angle: %d", military_icon->angle);
                     ImGui::InputFloat("Set angle", &military_icon->angle);
 
@@ -3163,23 +3034,50 @@ int main(int argc, char* args[]) {
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World saving");
 
-                static char buffer[32] = "";
-                ImGui::InputText("save name", buffer, sizeof(buffer));
-                
                 if(ImGui::Button("Save World")){
-                    std::string filename = std::string(buffer) + ".nw";
-                    world.SaveWorld(filename, false);
+                    ImGui::OpenPopup("SaveWorldModal");
                 }
 
-                if(ImGui::Button("Save & Upload")){
-                    std::string filename = std::string(buffer) + ".nw";
-                    world.SaveWorld(filename, true);
-                }
-                ImGui::SameLine();
-                if(ImGui::Button("< Autofill date")){
-                    std::time_t now = std::time(nullptr);
-                    std::tm tm_now = *std::localtime(&now);
-                    std::strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H_%M_%S", &tm_now);
+                ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+                ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+                if (ImGui::BeginPopupModal("SaveWorldModal", NULL, ImGuiWindowFlags_AlwaysAutoResize))
+                {
+                    static char buffer[32] = "";
+                    ImGui::InputText("Savename", buffer, sizeof(buffer));
+                    
+                    if(ImGui::Button("< Autofill date")){
+                        std::time_t now = std::time(nullptr);
+                        std::tm tm_now = *std::localtime(&now);
+                        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H_%M_%S", &tm_now);
+                    }
+
+                    ImGui::Separator();
+                    if(ImGui::Button("Save to File"))
+                    {
+                        std::string filename = std::string(buffer) + ".nw";
+                        world.SaveWorld(filename, false);
+                        
+                    ImGui::CloseCurrentPopup();
+                    }
+
+                    if(std::filesystem::exists("server_keys.json")) 
+                    {
+                        ImGui::SameLine();
+                        if(ImGui::Button("Save & Upload"))
+                        {
+                            std::string filename = std::string(buffer) + ".nw";
+                            world.SaveWorld(filename, true);
+
+                        ImGui::CloseCurrentPopup();
+                        }
+                    }
+
+                    ImGui::SameLine();
+                    if (ImGui::Button("Close")) {
+                        ImGui::CloseCurrentPopup();
+                    }
+                ImGui::EndPopup();
                 }
             }
 
@@ -3188,177 +3086,245 @@ int main(int argc, char* args[]) {
  
         if (popup==true)
         {
-            ImGui::OpenPopup("dropdownmenu");
+            ImGui::OpenPopup("toolkitmenu");
         }
-        if (ImGui::BeginPopup("dropdownmenu"))
+        if (ImGui::BeginPopup("toolkitmenu"))
         {
-            ImGui::Text("popup");
+            ImGui::Text("Toolkit");
+            ImGuiTabBarFlags tab_bar_flags = ImGuiTabBarFlags_FittingPolicyScroll;
+            if (ImGui::BeginTabBar("Sets", tab_bar_flags))
+            {
+                if (ImGui::BeginTabItem("Tiles"))
+                {
+                    if (ImGui::BeginTabBar("TileIDs", tab_bar_flags))
+                    {
+                        for(auto& id_map : world.IDmaps)
+                        { 
+                            std::string label = id_map.name; 
+                            if (ImGui::BeginTabItem(label.c_str())) 
+                            { 
+                                std::string local_id = "##"+label;
+                                if (ImGui::BeginListBox(local_id.c_str())) 
+                                {
+                                    for (int i = 0; i <= 255; ++i) 
+                                    { 
+                                        auto it = id_map.id_map.find(i); 
+                                        if (it == id_map.id_map.end()) { 
+                                            break; 
+                                        } else { 
+                                            auto [r, g, b, text] = it->second; 
+                                            ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f); 
+                                            if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(24, 24)))
+                                            { 
+                                                printf("Debug::SetID::%d\n", i); 
+                                                selected_tile_id = i; 
+                                                selected_idmap = id_map.name; 
+                                            } 
+                                            if(!text.empty())
+                                            { 
+                                                ImGui::SameLine(); 
+                                                ImGui::Text("%s", text.c_str()); 
+                                            } 
+                                        } 
+                                    } 
+                                ImGui::EndListBox();
+                                }
+                            ImGui::EndTabItem(); 
+                            }
+                        }
+                    ImGui::EndTabBar();
+                    }
+                ImGui::EndTabItem();
+                }
+
+                if (ImGui::BeginTabItem("Icons"))
+                {
+                    if (ImGui::BeginTabBar("IconsBar", tab_bar_flags))
+                    {
+                        if (ImGui::BeginTabItem("Civilian"))
+                        {
+                            std::string local_id = "##civilian_icons";
+                            if (ImGui::BeginListBox(local_id.c_str())) 
+                            {
+                                for (int i = 1; i <= 255; ++i) 
+                                {
+                                    std::string filename = world.CivilianIdMap[i];
+                                    std::string filename_string = "icons/civilian/" + std::to_string(i) + "_" + filename + ".png";
+                                    const char* char_buffer = filename_string.c_str();
+                                    SDL_Surface* img_surface = IMG_Load(char_buffer);
+                                    if (!img_surface) {
+                                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
+                                        continue;
+                                    } else {
+                                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+                                        if (!tex_buffer) {
+                                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                                        }
+
+                                        ImVec2 icon_size = {24, 24};
+                                        ImTextureID icon_texture_ref;
+                                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size))
+                                        {
+                                            selected_icon_id = i;
+                                            selected_icon_class = 1;
+                                        }
+                                        
+                                        // cut filename to just the name without path and extension for label
+                                        std::string icon_label = char_buffer;
+                                        size_t last_slash = icon_label.find_last_of("/\\");
+                                        if (last_slash != std::string::npos) {
+                                            icon_label = icon_label.substr(last_slash + 1);
+                                        }
+                                        size_t last_dot = icon_label.find_last_of(".");
+                                        if (last_dot != std::string::npos) {
+                                            icon_label = icon_label.substr(0, last_dot);
+                                        }
+                                        ImGui::SameLine(); ImGui::Text("%s", icon_label.c_str());
+                                    }
+                                }
+                            ImGui::EndListBox();
+                            }
+                        ImGui::EndTabItem();
+                        }
+
+                        if (ImGui::BeginTabItem("Military"))
+                        {
+                            std::string local_id = "##military_icons";
+                            if (ImGui::BeginListBox(local_id.c_str())) 
+                            {
+                                for (int i = 1; i <= 255; ++i) 
+                                {
+                                    std::string filename = world.MilitaryIdMap[i];
+                                    std::string filename_string = "icons/military/" + std::to_string(i) + "_" + filename + ".png";
+                                    const char* char_buffer = filename_string.c_str();
+                                    SDL_Surface* img_surface = IMG_Load(char_buffer);
+                                    if (!img_surface) {
+                                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
+                                        continue;
+                                    }else{
+                                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+                                        if (!tex_buffer) {
+                                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                                        }
+
+                                        ImVec2 icon_size = {24, 24};
+                                        ImTextureID icon_texture_ref;
+                                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
+                                            selected_icon_id = i;
+                                            selected_icon_class = 2;
+                                        }
+
+                                        // cut filename to just the name without path and extension for label
+                                        std::string icon_label = char_buffer;
+                                        size_t last_slash = icon_label.find_last_of("/\\");
+                                        if (last_slash != std::string::npos) {
+                                            icon_label = icon_label.substr(last_slash + 1);
+                                        }
+                                        size_t last_dot = icon_label.find_last_of(".");
+                                        if (last_dot != std::string::npos) {
+                                            icon_label = icon_label.substr(0, last_dot);
+                                        }
+                                        ImGui::SameLine(); ImGui::Text("%s", icon_label.c_str());
+                                    }
+                                }
+                            ImGui::EndListBox();
+                            }
+                        ImGui::EndTabItem();
+                        }
+
+                        if (ImGui::BeginTabItem("Decorator"))
+                        {
+                            std::string local_id = "##decorator_icons";
+                            if (ImGui::BeginListBox(local_id.c_str())) 
+                            {
+                                if(ImGui::Button("-##decorator_deselect", ImVec2(32, 32))){
+                                    selected_decorator_id = 0;
+                                }
+                                ImGui::SameLine(); ImGui::Text("Deselect");
+                                
+                                for (int i = 1; i <= 255; ++i) {
+                                    std::string filename = world.DecoratorIdMap[i];
+                                    std::string filename_string = "icons/decorator/" + std::to_string(i) + "_" + filename + ".png";
+                                    const char* char_buffer = filename_string.c_str();
+                                    SDL_Surface* img_surface = IMG_Load(char_buffer);
+                                    if (!img_surface) {
+                                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
+                                        break;
+                                    }else{
+                                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+                                        if (!tex_buffer) {
+                                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                                        }
+
+                                        ImVec2 icon_size = {24, 24};
+                                        ImTextureID icon_texture_ref;
+                                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
+                                            selected_decorator_id = i;
+
+                                            if(world.selected_world_icon){
+                                                world.selected_world_icon->add_decorator(renderer, i, world.DecoratorIdMap);
+                                            }
+                                        }
+
+                                        std::string icon_label = char_buffer;
+                                        size_t last_slash = icon_label.find_last_of("/\\");
+                                        if (last_slash != std::string::npos) {
+                                            icon_label = icon_label.substr(last_slash + 1);
+                                        }
+                                        size_t last_dot = icon_label.find_last_of(".");
+                                        if (last_dot != std::string::npos) {
+                                            icon_label = icon_label.substr(0, last_dot);
+                                        }
+                                        ImGui::SameLine(); ImGui::Text("%s", icon_label.c_str());
+                                    }
+                                }
+                            ImGui::EndListBox();
+                            }
+                        ImGui::EndTabItem();
+                        }
+                    ImGui::EndTabBar();
+                    }
+                ImGui::EndTabItem();
+                }
+            ImGui::EndTabBar();
+            }
             ImGui::Separator();
-
-            for(auto& id_map : world.IDmaps){
-                std::string label = "IDs: " + id_map.name;
-                if (ImGui::TreeNode(label.c_str())) {
-                    for (int i = 0; i <= 255; ++i) {
-                        auto it = id_map.id_map.find(i);
-                        if (it == id_map.id_map.end()) {
-                            break;
-                        } else {
-                            auto [r, g, b, text] = it->second;
-                            ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
-                            if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(32, 16))){
-                                printf("Debug::SetID::%d\n", i);
-                                selected_tile_id = i;
-                                selected_idmap = id_map.name;
-                            }
-                            ImGui::SameLine(); ImGui::Text("ID:%d", i);
-                            if(!text.empty()){
-                                ImGui::SameLine(); ImGui::Text("%s", text.c_str());
-                            }
-                        }
-                    }
-
-                    ImGui::TreePop();
-                }
-            }
-
-            if (ImGui::TreeNode("Civilian Icon selection")){
-                for (int i = 1; i <= 255; ++i) {
-                    std::string filename = world.CivilianIdMap[i];
-                    std::string filename_string = "icons/civilian/" + std::to_string(i) + "_" + filename + ".png";
-                    const char* char_buffer = filename_string.c_str();
-                    SDL_Surface* img_surface = IMG_Load(char_buffer);
-                    if (!img_surface) {
-                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
-                        continue;
-                    }else{
-                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
-                        if (!tex_buffer) {
-                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
-                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
-                        }
-
-                        ImVec2 icon_size = {32, 32};
-                        ImTextureID icon_texture_ref;
-                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
-                            selected_icon_id = i;
-                            selected_icon_class = 1;
-                        }
-
-                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
-                    }
-                }
-
-                ImGui::TreePop();
-            }
-
-            if (ImGui::TreeNode("Military Icon selection")){
-                for (int i = 1; i <= 255; ++i) {
-                    std::string filename = world.MilitaryIdMap[i];
-                    std::string filename_string = "icons/military/" + std::to_string(i) + "_" + filename + ".png";
-                    const char* char_buffer = filename_string.c_str();
-                    SDL_Surface* img_surface = IMG_Load(char_buffer);
-                    if (!img_surface) {
-                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
-                        continue;
-                    }else{
-                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
-                        if (!tex_buffer) {
-                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
-                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
-                        }
-
-                        ImVec2 icon_size = {32, 32};
-                        ImTextureID icon_texture_ref;
-                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
-                            selected_icon_id = i;
-                            selected_icon_class = 2;
-                        }
-
-                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
-                    }
-                }
-
-                ImGui::TreePop();
-            }
-
-            if (ImGui::TreeNode("Decorator Icon selection")){
-                if(ImGui::Button("-##decorator_deselect", ImVec2(32, 32))){
-                    selected_decorator_id = 0;
-                }
-                ImGui::SameLine(); ImGui::Text("Deselect");
-                
-                for (int i = 1; i <= 255; ++i) {
-                    std::string filename = world.DecoratorIdMap[i];
-                    std::string filename_string = "icons/decorator/" + std::to_string(i) + "_" + filename + ".png";
-                    const char* char_buffer = filename_string.c_str();
-                    SDL_Surface* img_surface = IMG_Load(char_buffer);
-                    if (!img_surface) {
-                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
-                        break;
-                    }else{
-                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
-                        if (!tex_buffer) {
-                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
-                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
-                        }
-
-                        ImVec2 icon_size = {32, 32};
-                        ImTextureID icon_texture_ref;
-                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
-                            selected_decorator_id = i;
-
-                            if(world.selected_world_icon){
-                                world.selected_world_icon->add_decorator(renderer, i, world.DecoratorIdMap);
-                            }
-                        }
-
-                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
-                    }
-                }
-
-                ImGui::TreePop();
-            }
 
             ImGui::Text("Controls");
             ImGui::Separator();
 
+            if(ENABLE_TIPS){
+                HelpMarker("Toggle between moving (selected) icons or not."); ImGui::SameLine(); 
+            }
             ImGui::Checkbox("Move icons", &moving_icon);
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "Toggle between moving selected icons or not.");
-                if(moving_icon==true){
-                    ImGui::TextColored(info_color, "You can now move any icon.");
-                }
-            }
 
+            if(ENABLE_TIPS){
+                HelpMarker("Toggle between rotating (selected) icons or not."); ImGui::SameLine(); 
+            }
             ImGui::Checkbox("Rotate icons", &rotating_icon);
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "Toggle between rotating selected icons or not.");
-                if(rotating_icon==true){
-                    ImGui::TextColored(info_color, "You can now rotate any icon.");
-                }
-            }
 
-            ImGui::Checkbox("Edit map", &editing_map);
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "Toggle between interacting or painting the map.");
-                if(editing_map==true){
-                    ImGui::TextColored(info_color, "You can now paint the map with tiles.");
-                }
+            if(ENABLE_TIPS){
+                HelpMarker("Toggle between interacting or painting the map."); ImGui::SameLine(); 
             }
+            ImGui::Checkbox("Edit map", &editing_map);
 
             static int brushtool_radio = 0;
 
             if (editing_map==true){
-                ImGui::InputInt("Set Brush Size", &brush_radius);
+                ImGui::SliderInt("Brush Size", &brush_radius, 0, 100, "%d");
 
                 if (ImGui::RadioButton("Brush", &brushtool_radio, 0)) brush_tool = 0;
                 if (ImGui::RadioButton("Fill", &brushtool_radio, 1)) brush_tool = 1;
-                // if (ImGui::RadioButton("Line", &brushtool_radio, 2)); //selected_linetool = "remove";
-                // if (ImGui::RadioButton("Copy", &brushtool_radio, 3)); //selected_linetool = "remove";
             }
 
             ImGui::Separator();
             ImGui::Text("Line tools");
+            if(ENABLE_TIPS){
+                ImGui::SameLine(); HelpMarker("You can create lines/shapes by using the line tools below.\nYou can click anywhere to place points\nand when done, you may press right click to finish.");
+            }
 
             static int linetool_radio = 0;
             if (ImGui::RadioButton("none", &linetool_radio, 0)) selected_linetool = "";
@@ -3366,29 +3332,6 @@ int main(int argc, char* args[]) {
             if (ImGui::RadioButton("add", &linetool_radio, 1)) selected_linetool = "add";
             ImGui::SameLine();
             if (ImGui::RadioButton("delete", &linetool_radio, 2)) selected_linetool = "remove";
-
-            if(ENABLE_TIPS==true){
-                ImGui::TextColored(info_color, "You can create lines/shapes by using the line tools below.\nYou can click anywhere to place points\nand when done, you may press right click to finish.");
-            }
-
-            // if(ENABLE_TIPS==true){
-            //     ImGui::TextColored(info_color, "Click to start placing points for a new shape.");
-            // }
-            // if(ImGui::Button("Add points")){
-            //     selected_linetool = "add";
-            // }
-            // if(ENABLE_TIPS==true){
-            //     ImGui::TextColored(info_color, "Click to start deleting points in shapes.");
-            // }
-            // if(ImGui::Button("Remove points")){
-            //     selected_linetool = "remove";
-            // }
-            // if(ENABLE_TIPS==true){
-            //     ImGui::TextColored(info_color, "Deselect line modification tools.");
-            // }
-            // if(ImGui::Button("Deselect")){
-            //     selected_linetool = "";
-            // }
             
             ImGui::EndPopup();
         }
@@ -3402,13 +3345,13 @@ int main(int argc, char* args[]) {
 
         viewport_source_lower.x = pan_offset_x;
         viewport_source_lower.y = pan_offset_y;
-        viewport_source_lower.w = current_window_width / size_offset;
-        viewport_source_lower.h = current_window_height / size_offset;
+        viewport_source_lower.w = current_window_width / zoom_offset;
+        viewport_source_lower.h = current_window_height / zoom_offset;
 
         viewport_source_upper.x = (float)pan_offset_x / (float)chunk_width;
         viewport_source_upper.y = (float)pan_offset_y / (float)chunk_height;
-        viewport_source_upper.w = (float)current_window_width / (float)chunk_width / size_offset;
-        viewport_source_upper.h = (float)current_window_height / (float)chunk_height / size_offset;
+        viewport_source_upper.w = (float)current_window_width / (float)chunk_width / zoom_offset;
+        viewport_source_upper.h = (float)current_window_height / (float)chunk_height / zoom_offset;
 
         // Calculate intersection of viewport_source and texture bounds
         intersect.x = fmaxf(viewport_source_lower.x, texture_rect.x);
@@ -3421,16 +3364,16 @@ int main(int argc, char* args[]) {
 
         // Only render texture if intersection is valid
         if (intersect.w > 0 && intersect.h > 0) {
-            viewport_output_bounded.x = (intersect.x - viewport_source_lower.x) * size_offset;
-            viewport_output_bounded.y = (intersect.y - viewport_source_lower.y) * size_offset;
-            viewport_output_bounded.w = (intersect.w * size_offset);
-            viewport_output_bounded.h = (intersect.h * size_offset);
+            viewport_output_bounded.x = (intersect.x - viewport_source_lower.x) * zoom_offset;
+            viewport_output_bounded.y = (intersect.y - viewport_source_lower.y) * zoom_offset;
+            viewport_output_bounded.w = (intersect.w * zoom_offset);
+            viewport_output_bounded.h = (intersect.h * zoom_offset);
 
             if(world.HasInitializedCheck()){
                 SDL_RenderFillRect(renderer, &viewport_output_bounded);
                 
                 SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                world.draw_all(renderer, &viewport_source_lower, &viewport_source_upper, &viewport_output_bounded, size_offset, pan_offset_x, pan_offset_y);
+                world.draw_all(renderer, &viewport_source_lower, &viewport_source_upper, &viewport_output_bounded, zoom_offset, pan_offset_x, pan_offset_y);
             }
         }
 
